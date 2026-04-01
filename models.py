@@ -10,7 +10,7 @@ All fields include:
 Reference: PROJECT_SPEC.md §3 Phase 2 Contract Specification
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conlist, confloat
 from enum import Enum
 from typing import List
 
@@ -88,8 +88,7 @@ class Observation(BaseModel):
         ge=0,
         description="USD/hour spend [0-∞]"
     )
-    node_bin_density: List[float] = Field(
-        min_length=10, max_length=10,
+    node_bin_density: conlist(confloat(ge=0.0, le=1.0), min_length=10, max_length=10) = Field(
         description="Per-node packing ratio; fixed 10-element vector [0-1]×10"
     )
 

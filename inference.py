@@ -183,25 +183,13 @@ Respond with ONLY valid JSON (no markdown or explanation):
                 # Get action from LLM
                 action = self.decide(obs, task_name)
                 
-                # Execute step in environment
-                obs_next, reward, done, info = env.step(action)
-                
-                # Create trajectory step
-                trajectory_step = TrajectoryStep(
-                    observation=obs,
-                    action=action.action_type,
-                    reward=reward,
-                    done=done,
-                    info=info
-                )
-                trajectory_steps.append(trajectory_step)
-                
-                obs = obs_next
+                # Execute step in environment (env logs trajectory internally)
+                obs, reward, done, info = env.step(action)
                 
                 if done:
                     break
             
-            return Trajectory(steps=trajectory_steps)
+            return Trajectory(steps=env.trajectory)
             
         except Exception as e:
             print(f"[ERROR] Episode failed: {e}", file=sys.stderr)

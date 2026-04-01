@@ -150,7 +150,12 @@ class KubeCostEnv:
         #    If we've gone beyond the trace length, replay last step.
         trace_idx = min(self._step, self.total_steps - 1)
         obs_raw = self.steps_data[trace_idx]["observation"]
-        self._current_obs = self._parse_observation(obs_raw)
+
+        # Apply trace physics and action-influenced state overlay.
+        new_obs = self._parse_observation(obs_raw)
+        new_obs.active_replicas = self._replicas
+        new_obs.node_size_class = self._node_size
+        self._current_obs = new_obs
 
         # 4. Compute reward (from updated obs)
         reward: float = self._calculate_reward()
@@ -407,6 +412,16 @@ class KubeCostEnv:
                     f"Trace step {i}: node_bin_density must be a 10-element list "
                     f"(file: {trace_path})"
                 )
+
+            # extra contract checks (Phase 2): numeric ranges
+            if not (0.0 <= float(obs["cpu_usage_pct"]) <= 100.0):
+                raise ValueError(f"Trace step {i}: cpu_usage_pct out of [0,100] (file: {trace_path})")
+            if not (0.0 <= float(obs["mem_usage_pct"]) <= 100.0):
+                raise ValueError(f"Trace step {i}: mem_usage_pct out of [0,100] (file: {trace_path})")
+            if float(obs["http_error_rate"]) < 0.0 or float(obs["http_error_rate"]) > 1.0:
+                raise ValueError(f"Trace step {i}: http_error_rate out of [0,1] (file: {trace_path})")
+            if float(obs["cpu_steal_pct"]) < 0.0 or float(obs["cpu_steal_pct"]) > 1.0:
+                raise ValueError(f"Trace step {i}: cpu_steal_pct out of [0,1] (file: {trace_path})")
 
         return data
 
