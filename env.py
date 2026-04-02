@@ -9,40 +9,106 @@ Reference: PROJECT_SPEC.md §2 OpenEnv Interface, §3 Reward Spec, §4 Environme
 """
 
 import json
+import logging
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Any, Dict, Tuple
 
 from models import (
-    Observation, Action, EnvState,
-    ActionType, NodeSizeClass, TrajectoryStep,
-    TraceData, TraceStep,
+    Observation,
+    Action,
+    EnvState,
+    ActionType,
+    NodeSizeClass,
+    TrajectoryStep,
+    TraceData,
+    TraceStep,
 )
 
-# ---------------------------------------------------------------------------
-# Node-size ordering for UPGRADE_NODE logic (irreversible for 1 step).
-# ---------------------------------------------------------------------------
-_NODE_TIER = {
-    NodeSizeClass.SMALL: 0,
-    NodeSizeClass.MEDIUM: 1,
-    NodeSizeClass.LARGE: 2,
-}
-_NODE_FROM_TIER = {v: k for k, v in _NODE_TIER.items()}
+__all__ = [
+    "KubeCostEnv",
+    "load_trace",
+    "compute_reward",
+    "validate_action",
+    "get_replica_delta",
+    "EnvError",
+]
 
-# Budget used in cost penalty: cost fraction = current_hourly_cost / BUDGET
-_HOURLY_BUDGET = 100.0
+# Configure module logger
+logger = logging.getLogger(__name__)
 
-# Reward bounds (spec §3.3)
-_R_MIN = -20.0
-_R_MAX = 10.5
+# ===== CUSTOM EXCEPTIONS =====
 
-# Replica hard bounds
-_REPLICAS_MIN = 0
-_REPLICAS_MAX = 200
+
+class EnvError(Exception):
+    """Base exception for environment-related errors."""
+
+    pass
+
+
+class TraceLoadError(EnvError):
+    """Raised when trace file cannot be loaded or parsed."""
+
+    pass
+
+
+class ActionValidationError(EnvError):
+    """Raised when action fails validation."""
+
+    pass
+
+
+# ===== ENVIRONMENT CONFIGURATION =====
+
+
+class _EnvironmentConfig:
+    """Centralized configuration for reward and constraint calculations."""
+
+    # Node-size ordering for UPGRADE_NODE logic (irreversible for 1 step)
+    NODE_TIER = {
+        NodeSizeClass.SMALL: 0,
+        NodeSizeClass.MEDIUM: 1,
+        NodeSizeClass.LARGE: 2,
+    }
+    NODE_FROM_TIER = {v: k for k, v in NODE_TIER.items()}
+
+    # Budget used in cost penalty: cost fraction = current_hourly_cost / BUDGET
+    HOURLY_BUDGET: float = 100.0
+
+    # Reward bounds (spec §3.3)
+    REWARD_MIN: float = -20.0
+    REWARD_MAX: float = 10.5
+
+    # Replica hard bounds
+    REPLICAS_MIN: int = 0
+    REPLICAS_MAX: int = 200
+
+    # SLA thresholds
+    SLA_THRESHOLD_MS: float = 300.0
+    SLA_WARNING_MIN_MS: float = 200.0
+
+    # Reward component weights
+    UPTIME_REWARD: float = 10.0
+    COST_PENALTY_RATE: float = 5.0
+    COST_PENALTY_CAP: float = 5.0
+    RAMP_PENALTY_RATE: float = 5.0
+    SLA_BREACH_PENALTY: float = 20.0
+    PROACTIVE_BONUS: float = 0.5
+
+
+_CONFIG = _EnvironmentConfig()
+_NODE_TIER = _CONFIG.NODE_TIER
+_NODE_FROM_TIER = _CONFIG.NODE_FROM_TIER
+_HOURLY_BUDGET = _CONFIG.HOURLY_BUDGET
+_R_MIN = _CONFIG.REWARD_MIN
+_R_MAX = _CONFIG.REWARD_MAX
+_REPLICAS_MIN = _CONFIG.REPLICAS_MIN
+_REPLICAS_MAX = _CONFIG.REPLICAS_MAX
 
 
 # ---------------------------------------------------------------------------
 # Trace loading: Load and validate deterministic trace JSON (Fix #20)
 # ---------------------------------------------------------------------------
+
 
 def load_trace(trace_path: str | Path) -> TraceData:
     """
@@ -55,28 +121,46 @@ def load_trace(trace_path: str | Path) -> TraceData:
         TraceData: Validated trace as Pydantic model.
 
     Raises:
-        FileNotFoundError: If trace_path does not exist.
-        ValueError: If JSON schema is invalid (caught by Pydantic).
+        TraceLoadError: If trace_path does not exist or JSON schema is invalid.
     """
-    trace_path = Path(trace_path) if isinstance(trace_path, str) else trace_path
-    
-    if not trace_path.exists():
-        raise FileNotFoundError(
-            f"Trace file not found: {trace_path}. "
+    trace_path_obj = Path(trace_path) if isinstance(trace_path, str) else trace_path
+
+    if not trace_path_obj.exists():
+        error_msg = (
+            f"Trace file not found: {trace_path_obj}. "
             f"Expected one of: traces/trace_v1_coldstart.json, "
             f"traces/trace_v1_squeeze.json, traces/trace_v1_entropy.json"
         )
+        logger.error(error_msg)
+        raise TraceLoadError(error_msg)
 
-    with trace_path.open("r", encoding="utf-8") as fh:
-        data: dict = json.load(fh)
+    try:
+        with trace_path_obj.open("r", encoding="utf-8") as fh:
+            data: dict = json.load(fh)
+        logger.debug(f"Loaded trace from {trace_path_obj}")
+    except (IOError, json.JSONDecodeError) as e:
+        error_msg = f"Failed to read or parse trace file {trace_path_obj}: {e}"
+        logger.error(error_msg)
+        raise TraceLoadError(error_msg) from e
 
-    # Pydantic validates entire structure recursively (replaces 60+ lines of manual checks)
-    return TraceData(**data)
+    try:
+        # Pydantic validates entire structure recursively
+        trace = TraceData(**data)
+        logger.info(
+            f"Trace validated: task={trace.task_name}, "
+            f"difficulty={trace.task_difficulty}, steps={len(trace.steps)}"
+        )
+        return trace
+    except ValueError as e:
+        error_msg = f"Trace schema validation failed: {e}"
+        logger.error(error_msg)
+        raise TraceLoadError(error_msg) from e
 
 
 # ---------------------------------------------------------------------------
 # Reward computation (Fix #21)
 # ---------------------------------------------------------------------------
+
 
 def compute_reward(observation: Observation, previous_steal_pct: float) -> float:
     """
@@ -100,25 +184,25 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
     cost_fraction = observation.current_hourly_cost / _HOURLY_BUDGET
 
     # Uptime component
-    uptime = 1.0 if p99 < 300.0 else 0.0
-    uptime_reward = 10.0 * uptime
+    uptime = 1.0 if p99 < _CONFIG.SLA_THRESHOLD_MS else 0.0
+    uptime_reward = _CONFIG.UPTIME_REWARD * uptime
 
-    # Cost penalty (capped at 5.0)
-    cost_penalty = min(5.0, 5.0 * cost_fraction)
+    # Cost penalty (capped)
+    cost_penalty = min(_CONFIG.COST_PENALTY_CAP, _CONFIG.COST_PENALTY_RATE * cost_fraction)
 
     # Ramp penalty (dense signal in warning zone [200, 300))
     ramp_penalty = 0.0
-    if 200.0 <= p99 < 300.0:
-        ramp_penalty = ((p99 - 200.0) / 100.0) * 5.0
+    if _CONFIG.SLA_WARNING_MIN_MS <= p99 < _CONFIG.SLA_THRESHOLD_MS:
+        ramp_penalty = ((p99 - _CONFIG.SLA_WARNING_MIN_MS) / 100.0) * _CONFIG.RAMP_PENALTY_RATE
 
     # SLA breach hard penalty
-    sla_breach_penalty = 20.0 if p99 >= 300.0 else 0.0
+    sla_breach_penalty = _CONFIG.SLA_BREACH_PENALTY if p99 >= _CONFIG.SLA_THRESHOLD_MS else 0.0
 
     # Proactive bonus (steal dropping + healthy p99)
     proactive_bonus = 0.0
     steal_dropped = observation.cpu_steal_pct < previous_steal_pct
-    if steal_dropped and p99 < 300.0:
-        proactive_bonus = 0.5
+    if steal_dropped and p99 < _CONFIG.SLA_THRESHOLD_MS:
+        proactive_bonus = _CONFIG.PROACTIVE_BONUS
 
     # Sum and clamp
     raw_reward = (
@@ -135,6 +219,7 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
 # Action validation (Fix #22)
 # ---------------------------------------------------------------------------
 
+
 def validate_action(action: Action) -> None:
     """
     Validate action is well-formed and applicable.
@@ -143,19 +228,19 @@ def validate_action(action: Action) -> None:
         action: Action to validate.
 
     Raises:
-        ValueError: If action is invalid.
+        ActionValidationError: If action is invalid.
     """
     if action is None:
-        raise ValueError("Action cannot be None")
-    
+        raise ActionValidationError("Action cannot be None")
+
     if not isinstance(action, Action):
-        raise ValueError(f"Action must be Action type, got {type(action)}")
-    
+        raise ActionValidationError(f"Action must be Action type, got {type(action)}")
+
     if action.action_type is None:
-        raise ValueError("Action.action_type cannot be None")
-    
+        raise ActionValidationError("Action.action_type cannot be None")
+
     if not isinstance(action.action_type, ActionType):
-        raise ValueError(f"action_type must be ActionType, got {type(action.action_type)}")
+        raise ActionValidationError(f"action_type must be ActionType, got {type(action.action_type)}")
 
 
 def get_replica_delta(action_type: ActionType) -> int:

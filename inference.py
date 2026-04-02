@@ -14,71 +14,141 @@ Runtime requirement: Complete end-to-end in <20 minutes on vcpu=2, memory=8gb.
 Reference: PROJECT_SPEC.md §5 Infra Spec, §7 Inference Contract
 """
 
-import os
 import json
-import sys
 import logging
+import os
+import sys
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from openai import OpenAI
+
 from env import KubeCostEnv
 from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
-from models import Observation, Action, ActionType, TrajectoryStep, Trajectory
+from models import Action, ActionType, Observation, Trajectory, TrajectoryStep
 
-# Module-level logger (Fix #23)
+__all__ = [
+    "CostOptimizerAgent",
+    "validate_env",
+    "main",
+]
+
+# Configure module logger
 logger = logging.getLogger(__name__)
+
+
+# ===== CONFIGURATION CONSTANTS =====
+
+
+class _InferenceConfig:
+    """Configuration for inference pipeline."""
+
+    # LLM request parameters
+    LLM_TEMPERATURE: float = 0.7
+    LLM_MAX_TOKENS: int = 100
+    LLM_TIMEOUT_SEC: int = 30
+
+    # Episode parameters
+    MAX_STEPS_PER_EPISODE: int = 1000
+
+    # Environment variables
+    REQUIRED_ENV_VARS: List[str] = ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN"]
+
+    # Minimum score threshold
+    MIN_MODEL_NAME_LENGTH: int = 2
+    MIN_HF_TOKEN_LENGTH: int = 10
+
+    # Trace file paths
+    TASK_CONFIGS: List[Dict[str, Any]] = [
+        {
+            "name": "cold_start",
+            "trace": "traces/trace_v1_coldstart.json",
+            "grader": "ColdStartGrader",
+            "description": "Scale cluster from 0→5 replicas without SLA breach",
+        },
+        {
+            "name": "efficient_squeeze",
+            "trace": "traces/trace_v1_squeeze.json",
+            "grader": "EfficientSqueezeGrader",
+            "description": "Maintain <20% steal over 24-hour load cycle",
+        },
+        {
+            "name": "entropy_storm",
+            "trace": "traces/trace_v1_entropy.json",
+            "grader": "EntropyStormGrader",
+            "description": "Proactive REBALANCE_NODE before steal>20%",
+        },
+    ]
+
+    # Minimum average score to pass
+    PASSING_SCORE_THRESHOLD: float = 0.27
+
+    # Output file
+    RESULTS_FILE: str = "inference_results.json"
+    LOG_FILE: str = "inference.log"
+
+
+_CONFIG = _InferenceConfig()
+
+
+# ===== CUSTOM EXCEPTIONS =====
+
+
+class InferenceError(Exception):
+    """Base exception for inference-related errors."""
+
+    pass
+
+
+class EnvironmentValidationError(InferenceError):
+    """Raised when environment variables are invalid."""
+
+    pass
+
 
 # ===== ENVIRONMENT VARIABLE VALIDATION =====
 
-def get_env_or_raise(key: str, default: str = None) -> str:
+
+def validate_env() -> None:
     """
-    Get environment variable or raise if missing and no default.
-    
-    CRITICAL: Uses os.environ.get() as spec-required (not hardcoded strings).
-    
-    Args:
-        key: Environment variable name
-        default: Default value if not found (optional)
-    
-    Returns:
-        str: Environment variable value
-    
+    Validate all required environment variables are set and valid.
+
     Raises:
-        ValueError: If key not found and no default provided
+        EnvironmentValidationError: If any required env var is missing or invalid.
     """
-    value = os.environ.get(key, default)
-    if not value:
-        raise ValueError(f"Missing required env var: {key}")
-    return value
-
-
-def validate_env():
-    """Validate all required environment variables are set and valid."""
-    required = ["API_BASE_URL", "MODEL_NAME", "HF_TOKEN"]
-    missing = [key for key in required if not os.environ.get(key)]
+    missing = [key for key in _CONFIG.REQUIRED_ENV_VARS if not os.environ.get(key)]
     if missing:
-        raise ValueError(f"Missing required env vars: {', '.join(missing)}")
-    
+        error_msg = f"Missing required env vars: {', '.join(missing)}"
+        logger.error(error_msg)
+        raise EnvironmentValidationError(error_msg)
+
     # Format validation
-    api_url = os.environ.get("API_BASE_URL").strip()
+    api_url = os.environ.get("API_BASE_URL", "").strip()
     if not (api_url.startswith("http://") or api_url.startswith("https://")):
-        raise ValueError(f"API_BASE_URL must start with http:// or https://: {api_url}")
-    
-    model_name = os.environ.get("MODEL_NAME").strip()
-    if not model_name or len(model_name) < 2:
-        raise ValueError(f"MODEL_NAME must be non-empty: {model_name}")
-    
-    hf_token = os.environ.get("HF_TOKEN").strip()
-    if len(hf_token) < 10:
-        raise ValueError(f"HF_TOKEN appears invalid (too short)")
+        error_msg = f"API_BASE_URL must start with http:// or https://: {api_url}"
+        logger.error(error_msg)
+        raise EnvironmentValidationError(error_msg)
+
+    model_name = os.environ.get("MODEL_NAME", "").strip()
+    if not model_name or len(model_name) < _CONFIG.MIN_MODEL_NAME_LENGTH:
+        error_msg = f"MODEL_NAME must be non-empty and at least {_CONFIG.MIN_MODEL_NAME_LENGTH} chars: {model_name}"
+        logger.error(error_msg)
+        raise EnvironmentValidationError(error_msg)
+
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if len(hf_token) < _CONFIG.MIN_HF_TOKEN_LENGTH:
+        error_msg = f"HF_TOKEN appears invalid (too short: {len(hf_token)} < {_CONFIG.MIN_HF_TOKEN_LENGTH})"
+        logger.error(error_msg)
+        raise EnvironmentValidationError(error_msg)
 
 
 # ===== INFERENCE PIPELINE =====
 
+
 class CostOptimizerAgent:
     """
     LLM-based decision agent for cost optimization (OpenAI Client).
-    
+
     Responsibilities:
         - Observe environment state (Observation model)
         - Query LLM for action recommendation (JSON response)
@@ -86,47 +156,62 @@ class CostOptimizerAgent:
         - Execute step, collect trajectory
         - Score trajectory with graders
     """
-    
-    def __init__(self, model_name: str | None = None, api_base_url: str | None = None) -> None:
+
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        api_base_url: Optional[str] = None,
+    ) -> None:
         """
         Initialize OpenAI LLM inference client.
-        
+
         Args:
             model_name: Model ID (from MODEL_NAME env var if not provided)
             api_base_url: API endpoint (from API_BASE_URL env var if not provided)
-        
+
+        Raises:
+            InferenceError: If model_name or api_base_url cannot be determined.
+
         Spec requirement: Uses OpenAI Client for all LLM calls.
         """
-        self.model_name = model_name or os.environ.get("MODEL_NAME")
-        self.api_base_url = api_base_url or os.environ.get("API_BASE_URL")
-        
+        self.model_name = (model_name or os.environ.get("MODEL_NAME", "")).strip()
+        self.api_base_url = (api_base_url or os.environ.get("API_BASE_URL", "")).strip()
+
         if not self.model_name:
-            raise ValueError("MODEL_NAME env var required")
+            raise InferenceError("MODEL_NAME env var required")
         if not self.api_base_url:
-            raise ValueError("API_BASE_URL env var required")
-        
-        # Initialize OpenAI client
-        self.client = OpenAI(
-            api_key=os.environ.get("HF_TOKEN"),  # Validator will inject HF_TOKEN
-            base_url=self.api_base_url
-        )
-    
-    def decide(self, observation: Observation, task_description: str = "") -> Action:
+            raise InferenceError("API_BASE_URL env var required")
+
+        try:
+            # Initialize OpenAI client with HF_TOKEN
+            self.client = OpenAI(
+                api_key=os.environ.get("HF_TOKEN"),
+                base_url=self.api_base_url,
+            )
+            logger.debug(f"OpenAI client initialized: model={self.model_name}, base_url={self.api_base_url}")
+        except Exception as e:
+            raise InferenceError(f"Failed to initialize OpenAI client: {e}") from e
+
+    def decide(
+        self,
+        observation: Observation,
+        task_description: str = "",
+    ) -> Action:
         """
         Query LLM for action given current observation.
-        
+
         Args:
             observation: Current Observation model
             task_description: Task context for LLM reasoning
-        
+
         Returns:
             Action: Selected action with validation
-        
+
         LLM is prompted to:
             - Analyze cluster state
             - Select action from available ActionType enum
             - Return JSON with action_type field
-        
+
         Error handling:
             - If LLM response invalid: default to MAINTAIN
             - Log failures for debugging
@@ -134,16 +219,25 @@ class CostOptimizerAgent:
         try:
             # Serialize observation to JSON for context
             obs_json = json.dumps(observation.model_dump(), indent=2)
-            
+
             # Build task-specific constraints
             task_constraints = ""
             if task_description.lower() == "cold_start":
-                task_constraints = "\nPriority: Reach 5+ replicas as quickly as possible while keeping p99_latency_ms < 300ms."
+                task_constraints = (
+                    "\nPriority: Reach 5+ replicas as quickly as possible "
+                    "while keeping p99_latency_ms < 300ms."
+                )
             elif task_description.lower() == "efficient_squeeze":
-                task_constraints = "\nPriority: Keep cpu_steal_pct < 20% throughout. Balance cost vs. reliability."
+                task_constraints = (
+                    "\nPriority: Keep cpu_steal_pct < 20% throughout. "
+                    "Balance cost vs. reliability."
+                )
             elif task_description.lower() == "entropy_storm":
-                task_constraints = "\nPriority: USE REBALANCE_NODE to prevent cpu_steal_pct from exceeding 20%. Be PROACTIVE, not reactive."
-            
+                task_constraints = (
+                    "\nPriority: USE REBALANCE_NODE to prevent cpu_steal_pct from exceeding 20%. "
+                    "Be PROACTIVE, not reactive."
+                )
+
             # Construct prompt
             prompt = f"""Analyze this Kubernetes cluster state and decide on a cost optimization action.
 
@@ -162,22 +256,25 @@ Available actions:
 
 Respond with ONLY valid JSON (no markdown):
 {{"action_type": "<one of the above actions>"}}"""
-            
+
             # Query LLM with timeout
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": "You are a Kubernetes cost optimization expert. Always respond with valid JSON only."},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": "You are a Kubernetes cost optimization expert. Always respond with valid JSON only.",
+                    },
+                    {"role": "user", "content": prompt},
                 ],
-                temperature=0.7,
-                max_tokens=100,
-                timeout=30  # 30-second timeout per request
+                temperature=_CONFIG.LLM_TEMPERATURE,
+                max_tokens=_CONFIG.LLM_MAX_TOKENS,
+                timeout=_CONFIG.LLM_TIMEOUT_SEC,
             )
-            
+
             # Parse response (handle markdown code blocks)
             response_text = response.choices[0].message.content.strip()
-            
+
             # Extract JSON (handle markdown code blocks)
             if "```" in response_text:
                 json_str = response_text.split("```")[1]
@@ -186,13 +283,13 @@ Respond with ONLY valid JSON (no markdown):
                 response_json = json.loads(json_str)
             else:
                 response_json = json.loads(response_text)
-            
+
             # Validate required field
             if "action_type" not in response_json:
                 raise ValueError("Response missing 'action_type' field")
-            
+
             action_type_str = response_json["action_type"]
-            
+
             # Validate action exists in enum
             try:
                 action_type = ActionType(action_type_str)
@@ -200,110 +297,138 @@ Respond with ONLY valid JSON (no markdown):
                 # Try matching by name instead of value
                 try:
                     action_type = ActionType[action_type_str]
-                except KeyError:
-                    raise ValueError(f"Unknown action: {action_type_str}. Valid: {[a.value for a in ActionType]}")
-            
+                except KeyError as e:
+                    raise ValueError(
+                        f"Unknown action: {action_type_str}. "
+                        f"Valid: {[a.value for a in ActionType]}"
+                    ) from e
+
             return Action(action_type=action_type)
-            
+
         except Exception as e:
             logger.warning(f"LLM response parsing failed ({e}), defaulting to MAINTAIN")
-            if 'response_text' in locals():
+            if "response_text" in locals():
                 logger.debug(f"Response was: {response_text[:200]}")
             return Action(action_type=ActionType.MAINTAIN)
-    
-    def run_episode(self, env: KubeCostEnv, max_steps: int = 1000, task_name: str = "") -> Trajectory:
+
+    def run_episode(
+        self,
+        env: KubeCostEnv,
+        max_steps: int = _CONFIG.MAX_STEPS_PER_EPISODE,
+        task_name: str = "",
+    ) -> Trajectory:
         """
         Run one full episode with LLM agent.
-        
+
         Args:
             env: Environment instance (KubeCostEnv)
             max_steps: Max steps before forced termination
             task_name: Task identifier for LLM context
-        
+
         Returns:
             Trajectory: List of trajectory steps for grading
-            
+
         Raises:
-            ValueError: If episode produces empty trajectory
+            InferenceError: If episode produces empty trajectory or other error occurs.
         """
         try:
             obs = env.reset()
-            
+
             for step_num in range(max_steps):
                 # Get action from LLM
                 action = self.decide(obs, task_name)
-                
+
                 # Execute step in environment (env logs trajectory internally)
                 obs, reward, done, info = env.step(action)
-                
+
                 if done:
+                    logger.debug(f"Episode {task_name} terminated at step {step_num}")
                     break
-            
+
             trajectory = Trajectory(steps=env.trajectory)
-            
+
             # VALIDATE: trajectory must not be empty
             if not trajectory.steps:
-                raise ValueError(f"Episode produced empty trajectory for task {task_name}")
-            
+                raise InferenceError(
+                    f"Episode produced empty trajectory for task {task_name}"
+                )
+
+            logger.info(f"Episode {task_name}: {len(trajectory.steps)} steps")
             return trajectory
-            
+
         except Exception as e:
             logger.error(f"Episode failed for {task_name}: {e}")
             raise
-    
-    def evaluate_task(self, env: KubeCostEnv, task_name: str, grader) -> float:
+
+    def evaluate_task(
+        self,
+        env: KubeCostEnv,
+        task_name: str,
+        grader: Any,
+    ) -> float:
         """
         Run episode and score with appropriate grader.
-        
+
         Args:
             env: Environment instance
             task_name: Task identifier
-            grader: Grader instance
-        
+            grader: Grader instance (ColdStartGrader, etc.)
+
         Returns:
             float: Score from grader [0.0, 1.0]
+
+        Raises:
+            InferenceError: If episode or grading fails.
         """
-        trajectory = self.run_episode(env, task_name=task_name)
-        score = grader.grade(trajectory.steps)
-        return score
+        try:
+            trajectory = self.run_episode(env, task_name=task_name)
+            score = grader.grade(trajectory.steps)
+
+            if not (0.0 <= score <= 1.0):
+                raise InferenceError(f"Invalid score {score} outside [0.0, 1.0]")
+
+            return score
+        except Exception as e:
+            logger.error(f"Task evaluation failed for {task_name}: {e}")
+            raise
 
 
 # ===== MAIN INFERENCE ENTRY POINT =====
 
-def main():
+
+def main() -> int:
     """
     Main inference entry point.
-    
+
     Spec requirements (PROJECT_SPEC.md §5 Infra Spec):
         - Runs when executed: python inference.py
         - Must complete in <20 minutes on vcpu=2, memory=8gb
         - Reads API_BASE_URL, MODEL_NAME, HF_TOKEN from environment
         - Uses OpenAI Client for all LLM calls
         - Outputs results (trajectories, scores)
-    
+
     Workflow:
         1. Validate environment variables
         2. Initialize agent and environments
-        3. Run 3 tasks:
-           - cold_start.json with ColdStartGrader
-           - efficient_squeeze.json with EfficientSqueezeGrader
-           - entropy_storm.json with EntropyStormGrader
+        3. Run 3 tasks (cold_start, efficient_squeeze, entropy_storm)
         4. Collect trajectories and scores
         5. Verify all scores in [0.0, 1.0] range
         6. Output results to console/file
-        7. Exit successfully (code 0) if all scores valid, else exit 1
+        7. Exit with code 0 if passing, else 1
+
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
     """
-    # Setup logging (Fix #23)
+    # Setup logging
     logging.basicConfig(
         level=logging.INFO,
-        format='%(levelname)s: %(message)s',
+        format="%(levelname)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler('inference.log')
-        ]
+            logging.FileHandler(_CONFIG.LOG_FILE),
+        ],
     )
-    logger = logging.getLogger(__name__)
-    
+
     try:
         # Validate environment
         validate_env()
@@ -311,93 +436,99 @@ def main():
         logger.info(f"  - API_BASE_URL: {os.environ.get('API_BASE_URL')}")
         logger.info(f"  - MODEL_NAME: {os.environ.get('MODEL_NAME')}")
         logger.info(f"  - HF_TOKEN: {'*' * 4} (hidden)")
-        
+
         # Initialize agent
         model_name = os.environ.get("MODEL_NAME")
         api_base_url = os.environ.get("API_BASE_URL")
         agent = CostOptimizerAgent(model_name=model_name, api_base_url=api_base_url)
         logger.info(f"✓ Agent initialized with model: {model_name}")
-        
-        # Define tasks
-        tasks = [
-            {
-                "name": "cold_start",
-                "trace": "traces/trace_v1_coldstart.json",
-                "grader": ColdStartGrader(),
-                "description": "Scale cluster from 0→5 replicas without SLA breach"
-            },
-            {
-                "name": "efficient_squeeze",
-                "trace": "traces/trace_v1_squeeze.json",
-                "grader": EfficientSqueezeGrader(),
-                "description": "Maintain <20% steal over 24-hour load cycle"
-            },
-            {
-                "name": "entropy_storm",
-                "trace": "traces/trace_v1_entropy.json",
-                "grader": EntropyStormGrader(),
-                "description": "Proactive REBALANCE_NODE before steal>20%"
-            }
-        ]
-        
-        results = {}
-        
+
+        # Build task configs with grader instances
+        grader_map = {
+            "ColdStartGrader": ColdStartGrader(),
+            "EfficientSqueezeGrader": EfficientSqueezeGrader(),
+            "EntropyStormGrader": EntropyStormGrader(),
+        }
+
+        results: Dict[str, float] = {}
+
         # Run inference on each task
-        for task in tasks:
-            logger.info(f"\n[{task['name'].upper()}]")
-            logger.info(f"  Description: {task['description']}")
-            
+        for task_config in _CONFIG.TASK_CONFIGS:
+            task_name = task_config["name"]
+            trace_path = task_config["trace"]
+            grader_cls_name = task_config["grader"]
+            description = task_config["description"]
+
+            logger.info(f"\n[{task_name.upper()}]")
+            logger.info(f"  Description: {description}")
+
             try:
-                env = KubeCostEnv(task["trace"])
-                trajectory = agent.run_episode(env, task_name=task["name"])
-                score = task["grader"].grade(trajectory.steps)
-                
-                # Validate score in [0.0, 1.0]
-                if not (0.0 <= score <= 1.0):
-                    raise ValueError(f"Score {score} outside bounds [0.0, 1.0]")
-                
-                results[task["name"]] = score
+                env = KubeCostEnv(trace_path)
+                grader = grader_map[grader_cls_name]
+                score = agent.evaluate_task(env, task_name, grader)
+
+                results[task_name] = score
                 logger.info(f"  Score: {score:.3f}")
+
             except Exception as e:
                 logger.error(f"  ERROR: {e}")
-                results[task["name"]] = 0.0
-        
+                results[task_name] = 0.0
+
         # Print summary
         logger.info("\n" + "=" * 50)
         logger.info("INFERENCE RESULTS SUMMARY")
         logger.info("=" * 50)
-        
+
         total_score = sum(results.values()) / len(results) if results else 0.0
         logger.info(f"\nTask Scores:")
         for task_name, score in sorted(results.items()):
             status = "✓" if score > 0.5 else "✗"
             logger.info(f"  {status} {task_name}: {score:.3f}")
-        
+
         logger.info(f"\nAverage Score: {total_score:.3f}")
         logger.info("=" * 50)
-        
+
         # Validate all scores in valid range
         invalid_scores = [s for s in results.values() if not (0.0 <= s <= 1.0)]
         if invalid_scores:
             logger.error(f"Invalid scores detected: {invalid_scores}")
             return 1
-        
+
         # Write results to file
-        results_file = "inference_results.json"
-        with open(results_file, "w") as f:
-            json.dump({
-                "timestamp": datetime.now().isoformat(),
-                "results": results,
-                "average_score": total_score
-            }, f, indent=2)
-        logger.info(f"Results saved to {results_file}")
-        
-        return 0 if total_score >= 0.27 else 1
-        
-    except Exception as e:
+        with open(_CONFIG.RESULTS_FILE, "w") as f:
+            json.dump(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "results": results,
+                    "average_score": total_score,
+                },
+                f,
+                indent=2,
+            )
+        logger.info(f"Results saved to {_CONFIG.RESULTS_FILE}")
+
+        # Determine success
+        passing = total_score >= _CONFIG.PASSING_SCORE_THRESHOLD
+        logger.info(
+            f"\nAverage score {total_score:.3f} "
+            f"{'✓ PASSING' if passing else '✗ FAILING'} "
+            f"(threshold: {_CONFIG.PASSING_SCORE_THRESHOLD})"
+        )
+
+        return 0 if passing else 1
+
+    except EnvironmentValidationError as e:
+        logger.error(f"[FATAL] Environment validation failed: {e}")
+        return 1
+    except InferenceError as e:
         logger.error(f"[FATAL] Inference failed: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"[FATAL] Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":

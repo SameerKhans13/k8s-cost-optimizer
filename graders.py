@@ -13,36 +13,81 @@ Rules enforced across every grader:
 Reference: PROJECT_SPEC.md §3 Phase 4 Grader Spec, §5 Audit Fixes, §6 The Three Tasks
 """
 
+import logging
 from typing import List
+
 from models import TrajectoryStep, ActionType
+
+__all__ = [
+    "ColdStartGrader",
+    "EfficientSqueezeGrader",
+    "EntropyStormGrader",
+    "is_healthy_uptime",
+    "is_warning_zone",
+    "uptime_score",
+    "steal_violation",
+    "cost_ratio",
+]
+
+# Configure module logger
+logger = logging.getLogger(__name__)
+
+
+# ===== GRADER CONFIGURATION =====
+
+
+class _GraderConfig:
+    """Configuration constants for graders."""
+
+    # SLA thresholds
+    SLA_THRESHOLD_MS: float = 300.0
+    SLA_WARNING_MIN_MS: float = 200.0
+
+    # Steal thresholds
+    STEAL_THRESHOLD: float = 0.20
+
+    # Entropy storm parameters
+    LOOKBACK_WINDOW: int = 5
+    
+    # Cost budget for normalization
+    BUDGET: float = 100.0
+
+
+_CONFIG = _GraderConfig()
+
 
 
 # ---------------------------------------------------------------------------
 # Observation metrics (module-level functions)
 # ---------------------------------------------------------------------------
 
+
 def is_healthy_uptime(p99_ms: float) -> bool:
     """Check if p99 latency is within SLA."""
-    return p99_ms < 300.0
+    return p99_ms < _CONFIG.SLA_THRESHOLD_MS
 
 
 def is_warning_zone(p99_ms: float) -> bool:
     """Check if p99 in warning zone [200, 300)."""
-    return 200.0 <= p99_ms < 300.0
+    return _CONFIG.SLA_WARNING_MIN_MS <= p99_ms < _CONFIG.SLA_THRESHOLD_MS
 
 
 def uptime_score(p99_ms: float) -> float:
     """Return 1.0 if healthy, 0.0 if breach."""
-    return 1.0 if p99_ms < 300.0 else 0.0
+    return 1.0 if p99_ms < _CONFIG.SLA_THRESHOLD_MS else 0.0
 
 
-def steal_violation(steal_pct: float, threshold: float = 0.20) -> bool:
+def steal_violation(steal_pct: float, threshold: float | None = None) -> bool:
     """Check if steal exceeds threshold."""
+    if threshold is None:
+        threshold = _CONFIG.STEAL_THRESHOLD
     return steal_pct >= threshold
 
 
-def cost_ratio(hourly_cost: float, budget: float = 100.0) -> float:
+def cost_ratio(hourly_cost: float, budget: float | None = None) -> float:
     """Compute cost as fraction of budget."""
+    if budget is None:
+        budget = _CONFIG.BUDGET
     return hourly_cost / budget
 
 
@@ -86,8 +131,7 @@ class ColdStartGrader:
         """
         # Edge case: empty trajectory
         if not trajectory:
-            import sys
-            print(f"[ERROR] ColdStartGrader: received empty trajectory", file=sys.stderr)
+            logger.warning("ColdStartGrader: received empty trajectory")
             return 0.0
 
         # Collect http_error_rate from every step's observation
@@ -134,9 +178,6 @@ class EfficientSqueezeGrader:
         Audit Fix 02: normalized by len(trajectory)
     """
 
-    # Steal threshold defined once — easy to update if spec changes.
-    STEAL_THRESHOLD: float = 0.20
-
     def grade(self, trajectory: List[TrajectoryStep]) -> float:
         """
         Grade efficient squeeze performance.
@@ -151,15 +192,14 @@ class EfficientSqueezeGrader:
         """
         # Edge case: empty trajectory
         if not trajectory:
-            import sys
-            print(f"[ERROR] EfficientSqueezeGrader: received empty trajectory", file=sys.stderr)
+            logger.warning("EfficientSqueezeGrader: received empty trajectory")
             return 0.0
 
-        # Count steps where steal crossed the 20% threshold
+        # Count steps where steal crossed the threshold
         violations = sum(
             1
             for step in trajectory
-            if step.observation.cpu_steal_pct >= self.STEAL_THRESHOLD
+            if step.observation.cpu_steal_pct >= _CONFIG.STEAL_THRESHOLD
         )
 
         # Normalized violation rate (length-invariant)
@@ -205,12 +245,6 @@ class EntropyStormGrader:
         Audit Fix 04: SCALE_REPLICAS(+20) ensures solvability of hard task
     """
 
-    # How many steps before a violation a REBALANCE_NODE counts as proactive.
-    LOOKBACK_WINDOW: int = 5
-
-    # Steal threshold for defining a "violation"
-    STEAL_THRESHOLD: float = 0.20
-
     def grade(self, trajectory: List[TrajectoryStep]) -> float:
         """
         Grade entropy storm proactive-rebalancing performance.
@@ -225,15 +259,14 @@ class EntropyStormGrader:
         """
         # Edge case: empty trajectory
         if not trajectory:
-            import sys
-            print(f"[ERROR] EntropyStormGrader: received empty trajectory", file=sys.stderr)
+            logger.warning("EntropyStormGrader: received empty trajectory")
             return 0.0
 
         # Step 1: Find all violation indices
         violation_indices = [
             i
             for i, step in enumerate(trajectory)
-            if step.observation.cpu_steal_pct >= self.STEAL_THRESHOLD
+            if step.observation.cpu_steal_pct >= _CONFIG.STEAL_THRESHOLD
         ]
 
         # Special case: zero violations
@@ -252,7 +285,7 @@ class EntropyStormGrader:
 
         # Step 2: For each violation, check the lookback window
         for violation_idx in violation_indices:
-            window_start = max(0, violation_idx - self.LOOKBACK_WINDOW)
+            window_start = max(0, violation_idx - _CONFIG.LOOKBACK_WINDOW)
             window_end = violation_idx  # exclusive — we look at steps *before* the breach
 
             # Did the agent issue REBALANCE_NODE anywhere in the lookback window?

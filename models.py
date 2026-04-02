@@ -10,9 +10,22 @@ All fields include:
 Reference: PROJECT_SPEC.md §3 Phase 2 Contract Specification
 """
 
-from pydantic import BaseModel, Field, conlist, confloat
 from enum import Enum
 from typing import List
+
+from pydantic import BaseModel, Field, confloat, conlist
+
+__all__ = [
+    "NodeSizeClass",
+    "ActionType",
+    "Observation",
+    "Action",
+    "EnvState",
+    "TrajectoryStep",
+    "Trajectory",
+    "TraceStep",
+    "TraceData",
+]
 
 
 # ===== ENUMS (Finite value sets) =====
