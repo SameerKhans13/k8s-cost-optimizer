@@ -16,8 +16,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 # Create virtual environment and install dependencies
-# Using --no-cache to minimize image size
-RUN uv sync --frozen --no-cache
+# Use --locked to validate lockfile is up-to-date (not --frozen, which is for workspaces only)
+RUN uv sync --locked
 
 # Copy application code
 COPY . .
