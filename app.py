@@ -469,9 +469,9 @@ User Input → Gradio Interface → Agent.decide()
 
 
 def main():
-    """Main entry point. Initialize and launch FastAPI with embedded Gradio app."""
+    """Main entry point. Launch FastAPI with REST API endpoints."""
     logger.info("=" * 70)
-    logger.info("KubeCost-Gym Application Starting (FastAPI + Gradio)")
+    logger.info("KubeCost-Gym Application Starting (FastAPI REST API)")
     logger.info("=" * 70)
 
     # Initialize agent
@@ -480,32 +480,20 @@ def main():
         logger.warning(f"Agent initialization warning: {msg}")
         # Continue anyway - agent will be initialized on first use if env vars set
 
-    # Create Gradio interface (without launching)
-    interface = create_interface()
-
     # Create FastAPI app with REST endpoints
     app = create_fastapi_app()
-
-    # Mount Gradio's ASGI app on FastAPI
-    # Access Gradio's internal app and add it as a catch-all route
-    from starlette.routing import Mount
-    from starlette.applications import Starlette
-    
-    # Get the Gradio app's internal FastAPI instance
-    # When Gradio creates a Blocks interface, it has an .app attribute
-    gradio_app = interface.app
-    
-    # Mount Gradio app on the root path
-    app.mount("/", gradio_app)
 
     # Get port and host from environment
     port = int(os.environ.get("PORT", 7860))
     host = os.environ.get("SERVER_NAME", "0.0.0.0")
 
-    logger.info(f"Launching combined app on {host}:{port}")
-    logger.info("  - Web UI: http://localhost:7860/")
-    logger.info("  - REST API: http://localhost:7860/docs (Swagger UI)")
-    logger.info("  - Endpoints: POST /reset, POST /step, GET /state, GET /health")
+    logger.info(f"Launching FastAPI REST API on {host}:{port}")
+    logger.info("  - API Docs: http://localhost:7860/docs (Swagger UI)")
+    logger.info("  - Endpoints:")
+    logger.info("      POST /reset  - Reset environment to initial state")
+    logger.info("      POST /step   - Execute action and get next step")
+    logger.info("      GET  /state  - Get current environment state")
+    logger.info("      GET  /health - Health check")
 
     # Launch using uvicorn
     import uvicorn
