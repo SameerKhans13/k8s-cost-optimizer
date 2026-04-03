@@ -486,7 +486,7 @@ User Input → Gradio Interface → Agent.decide()
 
 
 def main():
-    """Main entry point. Launch Gradio interface."""
+    """Main entry point. Launch FastAPI with REST endpoints."""
     logger.info("=" * 70)
     logger.info("KubeCost-Gym Application Starting")
     logger.info("=" * 70)
@@ -497,26 +497,34 @@ def main():
         logger.warning(f"Agent initialization warning: {msg}")
         # Continue anyway - agent will be initialized on first use if env vars set
 
-    # Create Gradio interface
-    logger.info("Creating Gradio interface...")
-    interface = create_interface()
+    # Create FastAPI app with REST API endpoints
+    # This is required for OpenEnv submission spec: POST /reset must be available
+    logger.info("Creating FastAPI REST API endpoints...")
+    app = create_fastapi_app()
 
     # Get port and host from environment
     port = int(os.environ.get("PORT", 7860))
     host = os.environ.get("SERVER_NAME", "0.0.0.0")
 
-    logger.info(f"✓ Launching Gradio UI on {host}:{port}")
-    logger.info("  - Main UI: http://localhost:7860")
-    logger.info("  - Includes: Task execution, results display, system info")
+    logger.info("=" * 70)
+    logger.info(f"Launching FastAPI on {host}:{port}")
+    logger.info("=" * 70)
+    logger.info("✓ OpenEnv REST Endpoints (required by submission):")
+    logger.info("  - POST /reset   - Reset environment to initial state")
+    logger.info("  - POST /step    - Execute action")
+    logger.info("  - GET  /state   - Get environment state")
+    logger.info("  - GET  /health  - Health check")
+    logger.info("  - GET  /docs    - Interactive API docs (Swagger UI)")
+    logger.info("  - GET  /        - API information")
 
-    # Launch Gradio interface
-    # In HF Spaces, this is the primary interface
-    interface.launch(
-        server_name=host,
-        server_port=port,
-        share=False,
-        show_error=True,
-        quiet=False,
+    # Launch using uvicorn
+    logger.info(f"Starting server...")
+    import uvicorn
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
     )
 
 
