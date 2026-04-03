@@ -53,7 +53,7 @@ class _InferenceConfig:
 
     # Environment variables
     API_BASE_URL_DEFAULT: str = "https://router.huggingface.co/v1"
-    MODEL_NAME_DEFAULT: str = "google/gemma-2b-it"
+    MODEL_NAME_DEFAULT: str = "mistralai/Mistral-7B-Instruct-v0.2:featherless-ai"
 
     REQUIRED_ENV_VARS: List[str] = ["API_BASE_URL", "MODEL_NAME"]
     REQUIRED_TOKEN_VARS: List[str] = ["HF_TOKEN"]  # HF_TOKEN mandatory for submission
