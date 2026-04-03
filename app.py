@@ -182,7 +182,7 @@ def create_fastapi_app() -> FastAPI:
                 "GET /health": "Health check",
                 "GET /docs": "Interactive API documentation (Swagger UI)",
             },
-            "docs": "http://localhost:7860/docs",
+            "docs": "/docs",
         }
 
     return app
@@ -486,9 +486,9 @@ User Input → Gradio Interface → Agent.decide()
 
 
 def main():
-    """Main entry point. Launch FastAPI with REST API endpoints."""
+    """Main entry point. Launch FastAPI with Gradio UI and REST API endpoints."""
     logger.info("=" * 70)
-    logger.info("KubeCost-Gym Application Starting (FastAPI REST API)")
+    logger.info("KubeCost-Gym Application Starting (Gradio + FastAPI REST API)")
     logger.info("=" * 70)
 
     # Initialize agent
@@ -500,13 +500,19 @@ def main():
     # Create FastAPI app with REST endpoints
     app = create_fastapi_app()
 
+    # Create Gradio interface and mount to FastAPI
+    interface = create_interface()
+    from gradio.mount import mount_gradio_app
+    app = mount_gradio_app(app, interface, path="/")
+
     # Get port and host from environment
     port = int(os.environ.get("PORT", 7860))
     host = os.environ.get("SERVER_NAME", "0.0.0.0")
 
-    logger.info(f"Launching FastAPI REST API on {host}:{port}")
-    logger.info("  - API Docs: http://localhost:7860/docs (Swagger UI)")
-    logger.info("  - Endpoints:")
+    logger.info(f"Launching Gradio + FastAPI REST API on {host}:{port}")
+    logger.info("  - Gradio UI: http://localhost:7860 (main interface)")
+    logger.info("  - REST API Docs: http://localhost:7860/docs (Swagger UI)")
+    logger.info("  - REST Endpoints:")
     logger.info("      POST /reset  - Reset environment to initial state")
     logger.info("      POST /step   - Execute action and get next step")
     logger.info("      GET  /state  - Get current environment state")

@@ -22,6 +22,19 @@ A production-grade RL environment for learning proactive Kubernetes autoscaling 
 
 ---
 
+## 🚀 Quick Start: Deploy to HuggingFace Spaces
+
+**Ready to deploy?** See [**DEPLOYMENT.md**](DEPLOYMENT.md) for complete step-by-step instructions.
+
+**Quick checklist:**
+- [ ] Create a HuggingFace Space with Docker SDK and `cpu-basic` hardware
+- [ ] Set `HF_TOKEN` secret (your LLM API key)
+- [ ] Optionally set `API_BASE_URL` and `MODEL_NAME` if using non-default LLM
+- [ ] Push this repository to your Space
+- [ ] Access the Gradio UI at `https://<username>-kubecost-gym.hf.space`
+
+---
+
 ## Overview
 
 This environment simulates a production Kubernetes cluster facing:
@@ -226,17 +239,17 @@ See [PROJECT_SPEC.md](PROJECT_SPEC.md) for full scoring formulas.
 ### Running Tests
 
 ```bash
-# Install test dependencies
-pip install pytest pytest-cov
+# Tests are included in uv dev dependencies (automatically installed with uv sync --dev)
+# uv automatically manages all test dependencies
 
 # Run all tests
-pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run specific test file
-pytest tests/test_graders.py -v
+uv run pytest tests/test_graders.py -v
 
 # Run with coverage
-pytest tests/ --cov=. --cov-report=html
+uv run pytest tests/ --cov=. --cov-report=html
 ```
 
 ### Troubleshooting Common Issues
@@ -255,11 +268,9 @@ A: Cost is clamped at 5.0 per step. If hourly_cost > BUDGET, penalty = 5.0. Chec
 
 ---
 
-source venv/bin/activate # On Windows: venv\Scripts\activate
+# Sync project environment (creates .venv automatically)
 
-# Install dependencies
-
-pip install -r requirements.txt
+uv sync
 
 # Set environment variables (REQUIRED - see Pre-Submission Checklist below)
 
@@ -526,7 +537,8 @@ k8s-cost-optimizer/
 ├── graders.py                ← Three task graders
 ├── inference.py              ← Gemini LLM agent (in root)
 │
-├── requirements.txt          ← Python dependencies
+├── pyproject.toml            ← Project metadata and dependencies
+├── uv.lock                   ← Locked dependency versions (universal)
 ├── Dockerfile                ← Docker image spec
 ├── README.md                 ← This file
 ├── validate_local.py         ← Pre-submission validator
@@ -598,7 +610,7 @@ This validates the critical gates:
 - ✓ Environment variables use `os.environ.get()`
 - ✓ OpenAI Client imported (not Google Gemini)
 - ✓ inference.py exists in root directory
-- ✓ requirements.txt has OpenAI (not google-generativeai)
+- ✓ pyproject.toml has OpenAI (not google-generativeai)
 - ✓ Dockerfile includes critical checks
 - ✓ No hardcoded credentials detected
 - ✓ Traces directory ready

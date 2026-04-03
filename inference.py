@@ -115,23 +115,37 @@ class EnvironmentValidationError(InferenceError):
 
 def validate_env() -> None:
     """
-    Validate all required environment variables are set and valid.
+    Validate all required environment variables are set and valid at startup.
 
     Raises:
         EnvironmentValidationError: If any required env var is missing or invalid.
+        
+    DEPLOYMENT NOTE: For HF Spaces, set these in Space secrets:
+      - HF_TOKEN: API key for the LLM endpoint (required, no default)
+      - API_BASE_URL: LLM API endpoint (optional, defaults to huggingface router)
+      - MODEL_NAME: LLM model ID (optional, defaults to mistral)
     """
-    # Use defaults when env vars are missing, per challenge requirements
-    api_url = os.environ.get("API_BASE_URL", _CONFIG.API_BASE_URL_DEFAULT).strip()
-    model_name = os.environ.get("MODEL_NAME", _CONFIG.MODEL_NAME_DEFAULT).strip()
-
-    # HF_TOKEN is mandatory
+    # HF_TOKEN is mandatory - fail fast if missing
     hf_token = os.environ.get("HF_TOKEN", "").strip()
     if not hf_token:
-        error_msg = "HF_TOKEN environment variable is required"
+        error_msg = (
+            "CRITICAL: HF_TOKEN environment variable is required.\n"
+            "          This is the API key for your LLM endpoint.\n"
+            "          For HF Spaces, add it to Space secrets."
+        )
         logger.error(error_msg)
         raise EnvironmentValidationError(error_msg)
 
-    # Basic format and sanity validation
+    if len(hf_token) < _CONFIG.MIN_API_KEY_LENGTH:
+        error_msg = f"HF_TOKEN must have length >= {_CONFIG.MIN_API_KEY_LENGTH} characters"
+        logger.error(error_msg)
+        raise EnvironmentValidationError(error_msg)
+
+    # Use defaults for API URL and model name
+    api_url = os.environ.get("API_BASE_URL", _CONFIG.API_BASE_URL_DEFAULT).strip()
+    model_name = os.environ.get("MODEL_NAME", _CONFIG.MODEL_NAME_DEFAULT).strip()
+
+    # Basic format validation
     if not (api_url.startswith("http://") or api_url.startswith("https://")):
         error_msg = f"API_BASE_URL must start with http:// or https://: {api_url}"
         logger.error(error_msg)
@@ -142,12 +156,7 @@ def validate_env() -> None:
         logger.error(error_msg)
         raise EnvironmentValidationError(error_msg)
 
-    if len(hf_token) < _CONFIG.MIN_API_KEY_LENGTH:
-        error_msg = f"HF_TOKEN must have length >= {_CONFIG.MIN_API_KEY_LENGTH}"
-        logger.error(error_msg)
-        raise EnvironmentValidationError(error_msg)
-
-    logger.info(f"Using API_BASE_URL={api_url} MODEL_NAME={model_name} HF_TOKEN=****")
+    logger.info(f"✓ Environment variables validated: API_BASE_URL={api_url[:50]}... MODEL_NAME={model_name} HF_TOKEN=****")
 
 
 # ===== INFERENCE PIPELINE =====
