@@ -1,24 +1,17 @@
 # requirements.txt
 # Python 3.10+ required (spec §0)
-# Dependencies for KubeCost-Gym RL Environment
+# Production-only dependencies for KubeCost-Gym RL Environment
+# (dev/test packages removed — container must run on vcpu=2, memory=8gb)
 
 # Core environment & validation
 pydantic>=2.0.0
-pydantic-settings>=2.0.0
 
-# OpenAI Client (spec requirement for LLM inference)
+# HTTP API server (OpenEnv REST interface — serves /reset, /step, /state)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# OpenAI Client (spec requirement — all LLM calls must use OpenAI client)
 openai>=1.3.0
 
-# Serialization & configuration
+# YAML parsing (openenv.yaml)
 PyYAML>=6.0
-python-dotenv>=0.21.0
-
-# Data science & utilities
-numpy>=1.24.0
-pandas>=1.5.0
-
-# Development & testing
-pytest>=7.0.0
-pytest-cov>=4.0.0
-black>=23.0.0
-mypy>=1.0.0
