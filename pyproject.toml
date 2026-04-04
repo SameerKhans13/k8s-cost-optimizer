@@ -18,6 +18,7 @@ dependencies = [
 # Application entry point - enables running via: uv run kubecost-gym
 # or: python -m server.app
 kubecost-gym = "server.app:main"
+server = "server.app:main"
 
 [dependency-groups]
 dev = [
