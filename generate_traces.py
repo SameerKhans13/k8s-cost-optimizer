@@ -5,54 +5,77 @@ from pathlib import Path
 def generate_sinusoidal_trace(task_name, difficulty, steps=50):
     steps_data = []
     for i in range(steps):
-        # Programmatic sinusoidal CPU model
-        # Base CPU = 40, Amplitude = 30, Period = 20 steps
-        # This creates a dynamic environment that testing agents must adapt to.
-        cpu_usage = 40.0 + 30.0 * math.sin(i / 20.0 * 2 * math.pi)
-        
-        # Memory follows CPU but with less variance
-        mem_usage = 50.0 + 15.0 * math.sin(i / 20.0 * 2 * math.pi + 0.5)
-        
-        # Define baseline replicas for the trace.
-        # These are the "default" values that the physics overlay modifies.
+        # Smooth sinusoidal load curves for CPU/memory and latency.
+        cpu_usage = 45.0 + 28.0 * math.sin(i / steps * 2.0 * math.pi)
+        mem_usage = 48.0 + 18.0 * math.sin(i / steps * 2.0 * math.pi + 0.8)
+        base_latency = 160.0 + 22.0 * math.sin(i / 12.0 * 2.0 * math.pi)
+
         if task_name == "cold_start":
-            active_replicas = 0
             node_size = "S"
-            # Higher initial error rate to force agent to scale up
-            base_error = 0.5 if i < 5 else 0.01
+            if i < 5:
+                active_replicas = 0
+            elif i < 9:
+                active_replicas = 1
+            elif i < 13:
+                active_replicas = 2
+            elif i < 17:
+                active_replicas = 3
+            elif i < 21:
+                active_replicas = 4
+            else:
+                active_replicas = 5
+
+            base_error = 0.60 - 0.06 * min(i, 7)
+            base_error = max(0.02, base_error)
+            steal_pct = 0.01
+            p99_latency = base_latency + max(0.0, 50.0 - i * 2.0)
+            current_cost = 10.0 + active_replicas * 1.0
+            reason = "cold_start_resource_buildout"
+
         elif task_name == "efficient_squeeze":
             active_replicas = 5
             node_size = "S"
-            base_error = 0.01
-        else: # entropy_storm
+            base_error = 0.02
+            steal_pct = max(0.0, min(0.35, 0.18 + 0.08 * math.sin(i / 8.0 * 2.0 * math.pi)))
+            p99_latency = base_latency + 18.0 * math.sin(i / 10.0 * 2.0 * math.pi)
+            current_cost = 10.0 + active_replicas * 1.0
+            reason = "squeeze_24h_cycle"
+
+        else:  # entropy_storm
             active_replicas = 10
             node_size = "M"
             base_error = 0.01
-            
-        # Periodic spikes in cpu_steal_pct for Task 3 (Entropy Storm)
-        # Every 10 steps, we have a "noisy neighbor" event starting at step 5
-        is_spike = (i % 10 >= 5 and i % 10 <= 7)
-        steal_pct = 0.25 if (is_spike and task_name == "entropy_storm") else 0.01
-            
+            phase = i % 10
+            if phase in (4, 5, 6):
+                steal_pct = 0.24 + 0.04 * math.sin(i * 1.8)
+            elif phase == 3:
+                steal_pct = 0.20 + 0.03 * math.sin(i * 2.0)
+            else:
+                steal_pct = 0.12 + 0.05 * math.sin(i / 5.0 * 2.0 * math.pi)
+            steal_pct = max(0.0, min(0.45, steal_pct))
+            p99_latency = base_latency + 15.0 * math.sin(i / 7.0 * 2.0 * math.pi)
+            current_cost = 25.0 + active_replicas * 1.0
+            reason = "entropy_storm_noisy_neighbor"
+
         observation = {
-            "cpu_usage_pct": round(max(0, min(100, cpu_usage)), 2),
-            "mem_usage_pct": round(max(0, min(100, mem_usage)), 2),
-            "p99_latency_ms": round(150.0 + i * 2.0, 2), # increasing latency floor
-            "http_error_rate": base_error,
-            "cpu_steal_pct": steal_pct,
+            "base_cpu_demand": round(max(0.0, cpu_usage), 2),
+            "base_mem_demand": round(max(0.0, mem_usage), 2),
+            "base_latency_ms": round(max(40.0, p99_latency), 2),
+            "base_error_rate": round(min(1.0, base_error), 4),
+            "base_steal_pct": round(steal_pct, 4),
             "active_replicas": active_replicas,
-            "buffer_depth": 100 + i * 10,
+            "buffer_depth": 80 + i * 3,
             "node_size_class": node_size,
-            "current_hourly_cost": 10.0,
-            "node_bin_density": [0.5] * 10
+            "current_hourly_cost": round(current_cost, 2),
+            "node_bin_density": [round(max(0.0, min(1.0, 0.45 + 0.05 * math.sin((i + j) / 4.0))), 4) for j in range(10)]
         }
-        
+
         steps_data.append({
             "step": i,
             "observation": observation,
-            "dynamics": {"reason": "sinusoidal_load_model"}
+            "dynamics": {"reason": reason}
         })
-        
+
     return {
         "task_name": task_name,
         "task_difficulty": difficulty,
