@@ -185,6 +185,56 @@ class Trajectory(BaseModel):
     )
 
 
+class TraceObservation(BaseModel):
+    """Raw workload demand snapshot from trace JSON.
+    
+    Trace files represent base demand and environmental pressure, not the final
+    agent-facing observation. The environment computes actual metrics from this
+    raw demand plus the agent's current capacity and node configuration.
+    """
+    base_cpu_demand: float = Field(
+        ge=0,
+        description="Raw CPU demand units for this trace step"
+    )
+    base_mem_demand: float = Field(
+        ge=0,
+        description="Raw memory demand units for this trace step"
+    )
+    base_latency_ms: float = Field(
+        ge=0,
+        description="Baseline latency pressure from workload demand"
+    )
+    base_error_rate: float = Field(
+        ge=0, le=1,
+        description="Baseline error pressure from workload demand"
+    )
+    base_steal_pct: float = Field(
+        ge=0, le=1,
+        description="Baseline noisy-neighbor pressure" 
+    )
+    active_replicas: int = Field(
+        ge=0,
+        description="Baseline replica count expected by the trace"
+    )
+    buffer_depth: int = Field(
+        ge=0,
+        description="Baseline queue depth for the raw workload"
+    )
+    node_size_class: NodeSizeClass = Field(
+        description="Baseline node tier for the raw workload"
+    )
+    current_hourly_cost: float = Field(
+        ge=0,
+        description="Baseline cost signal from the trace"
+    )
+    node_bin_density: conlist(confloat(ge=0.0, le=1.0), min_length=10, max_length=10) = Field(
+        description="Baseline node packing ratio vector"
+    )
+
+    class Config:
+        use_enum_values = True
+
+
 # ===== TRACE DATA (For loading from JSON files) =====
 
 class TraceStep(BaseModel):
@@ -193,7 +243,7 @@ class TraceStep(BaseModel):
     Reference: PROJECT_SPEC.md §3 Phase 1 Determinism Guarantee
     """
     step: int = Field(description="Step index in trace")
-    observation: Observation = Field(description="Observation at this step")
+    observation: TraceObservation = Field(description="Raw trace demand snapshot")
     dynamics: dict = Field(
         default_factory=dict,
         description="Optional dynamics metadata (reason, etc.)"

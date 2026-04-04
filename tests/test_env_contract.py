@@ -16,22 +16,16 @@ def test_reset_returns_observation_and_state_type():
 
 
 def test_step_applies_scale_action_to_observation():
-    """Verify that actions modify internal state (recorded in trajectory).
-    
-    Note: Observations come directly from traces (pure replay, no formula overlays).
-    The scale action modifies internal replica state, which is captured in the
-    TrajectoryStep. Future trace steps may reflect the consequences, but the
-    current observation is from the trace, not from the action.
-    """
+    """Verify that actions modify internal state and are logged in trajectory."""
     env = KubeCostEnv("traces/trace_v1_coldstart.json")
     obs0 = env.reset()
 
-    # Apply scale action - this modifies internal state, not immediate observation
+    # Apply scale action - this modifies internal state and future observations.
     obs1, reward, done, info = env.step(Action(action_type=ActionType.SCALE_UP_5))
     assert isinstance(obs1, Observation)
     
-    # Observation comes from trace (pure replay), not from action
-    # But action was recorded in trajectory - verify trajectory has the action
+    # Observations are procedurally generated using trace data as baseline demand,
+    # combined with causal agent capacity math.
     trajectory = env.trajectory
     assert len(trajectory) > 0
     # TrajectoryStep.action is stored as ActionType enum value (string)
@@ -51,7 +45,7 @@ def test_episode_trajectory_consistency():
     trajectory = env.trajectory
     assert len(trajectory) == 3
     assert all(step.observation.p99_latency_ms >= 0.0 for step in trajectory)
-    assert all(0.0 <= step.reward <= 10.5 for step in trajectory)
+    assert all(-20.0 <= step.reward <= 10.5 for step in trajectory)
 
 
 def test_graders_clamp_scores():

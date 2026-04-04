@@ -214,25 +214,30 @@ class TestEntropyStormGrader:
         assert grader.grade([]) == 0.0
     
     def test_no_violations_with_rebalance(self, dummy_step):
-        """No violations but with REBALANCE actions should return 1.0 (proactive)."""
+        """Clean trace with no violations should not reward REBALANCE spam."""
         grader = EntropyStormGrader()
         rebalance_step = TrajectoryStep(
             observation=dummy_step.observation,
-            action=ActionType.REBALANCE_NODE,  # Proactive action
+            action=ActionType.REBALANCE_NODE,
             reward=1.0, done=False, info={}
         )
         trajectory = [rebalance_step, dummy_step, dummy_step]
-        assert grader.grade(trajectory) == 1.0
-    
+        assert grader.grade(trajectory) == 0.0
+
     def test_no_violations_no_rebalance(self, dummy_step):
-        """No violations and no REBALANCE should return 0.5 (passive)."""
+        """No violations and no REBALANCE should return 0.0."""
         grader = EntropyStormGrader()
         trajectory = [dummy_step] * 3  # All maintain, no violations
-        assert grader.grade(trajectory) == 0.5
-    
+        assert grader.grade(trajectory) == 0.0
     def test_violation_with_proactive_rebalance(self, dummy_step):
-        """Violation preceded by REBALANCE should count as prevented."""
+        """Violation preceded by REBALANCE on a rising steal signal should score 1.0."""
         grader = EntropyStormGrader()
+        obs_rebalance = Observation(
+            cpu_usage_pct=45.0, mem_usage_pct=50.0, p99_latency_ms=180.0,
+            http_error_rate=0.0, cpu_steal_pct=0.12,  # Rising steal signal
+            active_replicas=3, buffer_depth=5, node_size_class=NodeSizeClass.MEDIUM,
+            current_hourly_cost=40.0, node_bin_density=[0.4] * 10
+        )
         obs_violation = Observation(
             cpu_usage_pct=45.0, mem_usage_pct=50.0, p99_latency_ms=180.0,
             http_error_rate=0.0, cpu_steal_pct=0.25,  # Violation
@@ -244,11 +249,11 @@ class TestEntropyStormGrader:
             action=ActionType.MAINTAIN, reward=1.0, done=False, info={}
         )
         rebalance_step = TrajectoryStep(
-            observation=dummy_step.observation,
+            observation=obs_rebalance,
             action=ActionType.REBALANCE_NODE, reward=1.0, done=False, info={}
         )
         
-        # REBALANCE 1 step before violation
+        # REBALANCE 1 step before violation on rising steal
         trajectory = [dummy_step, rebalance_step, violation_step]
         score = grader.grade(trajectory)
         assert score == 1.0, "Should detect proactive REBALANCE within lookback window"

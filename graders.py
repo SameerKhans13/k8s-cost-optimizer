@@ -47,7 +47,7 @@ class _GraderConfig:
     STEAL_THRESHOLD: float = 0.20
 
     # Entropy storm parameters
-    LOOKBACK_WINDOW: int = 5
+    LOOKBACK_WINDOW: int = 2
     
     # Cost budget for normalization
     BUDGET: float = 100.0
@@ -271,26 +271,29 @@ class EntropyStormGrader:
 
         # Special case: zero violations
         if not violation_indices:
-            # Agent was passive/lucky — only grant partial credit if they took REBALANCE actions
-            rebalance_count = sum(1 for step in trajectory if step.action == ActionType.REBALANCE_NODE)
-            if rebalance_count > 0:
-                # Agent was actively trying to prevent (proactive even when not needed)
-                return 1.0
-            else:
-                # Agent did nothing; don't reward inaction on the hardest task
-                return 0.0
+            # No violations means there was no observed breach to credit.
+            return 0.0
 
         total_violations = len(violation_indices)
         proactive_actions = 0
 
-        # Step 2: For each violation, check the lookback window
+        # Step 2: For each violation, check the tight lookback window
         for violation_idx in violation_indices:
             window_start = max(0, violation_idx - _CONFIG.LOOKBACK_WINDOW)
             window_end = violation_idx  # exclusive — we look at steps *before* the breach
 
-            # Did the agent issue REBALANCE_NODE anywhere in the lookback window?
+            # Only count REBALANCE_NODE if it was taken on a rising steal signal.
+            def _is_rising_steal(step_index: int) -> bool:
+                if step_index == 0:
+                    return trajectory[step_index].observation.cpu_steal_pct > 0.0
+                return (
+                    trajectory[step_index].observation.cpu_steal_pct
+                    > trajectory[step_index - 1].observation.cpu_steal_pct
+                )
+
             rebalanced_proactively = any(
                 trajectory[j].action == ActionType.REBALANCE_NODE
+                and _is_rising_steal(j)
                 for j in range(window_start, window_end)
             )
 

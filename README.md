@@ -102,101 +102,20 @@ The agent selects from 9 discrete actions:
 
 ## Known Limitations & Troubleshooting
 
-### Critical Fixes Applied (Phase 4 Remediation)
+This repository now uses programmatic 50-step traces for all primary tasks and removes any minimal fixture traces from the submission path.
 
-This codebase has been aggressively reviewed and fixed for the following critical issues:
-
-#### 1. Physics Overlay Removed (Fix #1)
-
-✅ **Status:** Fixed
-
-- **Issue:** Observations were being modified by formula overlays, breaking determinism
-- **Resolution:** Observations now come directly from traces with NO modifications
-- **Impact:** All traces are now ground truth; reproducibility guaranteed
-
-#### 2. Cost Penalty Bounded (Fix #2)
-
-✅ **Status:** Fixed
-
-- **Issue:** Cost penalty could exceed 5.0 in reward formula, breaking bounds
-- **Resolution:** Cost penalty now clamped: `min(5.0, 5.0 * cost_fraction)`
-- **Impact:** Reward strictly bounded to [-20.0, +10.5]
-
-#### 3. Proactive Bonus Timing Fixed (Fix #3)
-
-✅ **Status:** Fixed
-
-- **Issue:** Previous steal comparison was off-by-one
-- **Resolution:** Steal snapshot captured after step advances, before reward calc
-- **Impact:** Task 3 learning signal now correct
-
-#### 4. EntropyStormGrader Logic Fixed (Fix #4)
-
-✅ **Status:** Fixed
-
-- **Issue:** Passive agents could score 1.0 with no violations
-- **Resolution:** Requires REBALANCE actions for perfect score when no violations occur
-- **Impact:** Prevents reward hacking; encourages proactive behavior
-
-#### 5. Episode Termination Fixed (Fix #5)
-
-✅ **Status:** Fixed
-
-- **Issue:** Episodes didn't terminate at trace end, causing duplicate observations
-- **Resolution:** Early exit when `_step >= total_steps`
-- **Impact:** No more wrapped observations in Task 2 & 3 grading
-
-#### 6. Pydantic Config Standardized (Fix #9)
-
-✅ **Status:** Fixed
-
-- **Issue:** Inconsistent `use_enum_values` across models
-- **Resolution:** All models now use `use_enum_values = True`
-- **Impact:** Consistent JSON serialization; LLM response parsing more reliable
-
-#### 7. LLM Response Parsing Enhanced (Fix #10)
-
-✅ **Status:** Fixed
-
-- **Issue:** Couldn't handle markdown code blocks, failed on name vs. value mismatches
-- **Resolution:** Robust parsing with markdown handling, name/value fallback, validation
-- **Impact:** Inference more reliable even with LLM formatting variations
-
-#### 8. Environment Validation Enhanced (Fix #12)
-
-✅ **Status:** Fixed
-
-- **Issue:** Env vars checked for existence but not format
-- **Resolution:** URL format validation, token length checks
-- **Impact:** Configuration errors caught early with clear messages
-
-#### 9. Inference Main Completed (Fix #13)
-
-✅ **Status:** Fixed
-
-- **Issue:** Main function incomplete, missing result output
-- **Resolution:** Full results collection, file output, exit codes
-- **Impact:** Inference pipeline is production-ready
-
-#### 10. Empty Trajectory Error Logging (Fix #8)
-
-✅ **Status:** Fixed
-
-- **Issue:** Empty trajectories silently returned 0.0
-- **Resolution:** Error logging in graders, trajectory validation in inference
-- **Impact:** Failures surface immediately instead of being silent
+- `generate_traces.py` produces 50-step sinusoidal traces for Cold Start, Efficient Squeeze, and Entropy Storm.
+- Task 2 uses a gradual load cycle with steal oscillations around the 20% threshold.
+- Task 3 uses noisy-neighbor spike patterns and rising steal indicators to require proactive REBALANCE behavior.
+- Local validation artifacts like `val_out.txt` are not included in the submitted codebase.
 
 ### Performance Considerations
 
-#### Traces Are Minimal Fixtures
+#### Traces and Validation
 
-⚠️ **Note:** Current traces (5-6 steps) are for rapid testing only.
-
-**For production:**
-
-- Traces should be 50+ steps (realistic time horizons)
-- Should be recorded from real K8s clusters or high-fidelity simulators
-- Should include diverse failure modes (cascades, oscillations, network failures)
+- Primary task traces are programmatically generated as 50-step episodes.
+- `generate_traces.py` is the single source of trace generation for cold-start, squeeze, and entropy tasks.
+- This provides a stable test bed while preserving realistic sinusoidal load cycles and noisy-neighbor events.
 
 #### LLM Integration Constraints
 
@@ -206,13 +125,13 @@ This codebase has been aggressively reviewed and fixed for the following critica
 
 ### Design Notes
 
-#### Observation Immutability
+#### Observation and Action Dynamics
 
-Observations are taken DIRECTLY from traces with NO formula overlays:
+The environment uses deterministic traces augmented by an action-sensitive overlay:
 
-- Agent actions (SCALE_REPLICAS, etc.) do NOT modify observations in the current step
-- Consequences are modeled in future trace steps (or can be)
-- To enable action feedback in observations, regenerate traces with action-dependent dynamics
+- The agent sees programmatic trace observations with realistic sinusoidal workload dynamics.
+- `SCALE_*`, `UPGRADE_NODE`, and `REBALANCE_NODE` actions affect the current episode state and reward.
+- Traces are generated to expose rising steal signals and load cycles; decisions are not rewarded by slide number alone.
 
 #### Task-Specific Scoring
 
@@ -230,7 +149,7 @@ Observations are taken DIRECTLY from traces with NO formula overlays:
 
 **Task 3: Entropy Storm (Hard)**
 
-- **Metric:** Proactive REBALANCE actions within 5 steps before steal violation
+- **Metric:** Proactive REBALANCE actions within 2 steps before steal violation
 - **Score:** `proactive_actions / total_violations` (or 0.0 if no violations and passive)
 - **Pass:** Score > 0.6
 
@@ -261,7 +180,7 @@ A: Check that trajectory is non-empty. If still 0.0, ensure observations have va
 A: Check API_BASE_URL is correct and accessible. Default timeout is 30s; increase if needed.
 
 **Q: EntropyStormGrader scores < 0.5 even with REBALANCE actions**
-A: Verify REBALANCE was issued within 5-step lookback window BEFORE steal violation appears.
+A: Verify REBALANCE was issued within 2-step lookback window BEFORE steal violation appears.
 
 **Q: Cost penalty seems high**
 A: Cost is clamped at 5.0 per step. If hourly_cost > BUDGET, penalty = 5.0. Check trace cost values.

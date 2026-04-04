@@ -21,6 +21,7 @@ from models import (
     NodeSizeClass,
     TrajectoryStep,
     TraceData,
+    TraceObservation,
     TraceStep,
 )
 
@@ -187,8 +188,8 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
     uptime = 1.0 if p99 < _CONFIG.SLA_THRESHOLD_MS else 0.0
     uptime_reward = _CONFIG.UPTIME_REWARD * uptime
 
-    # Cost penalty (capped)
-    cost_penalty = min(_CONFIG.COST_PENALTY_CAP, _CONFIG.COST_PENALTY_RATE * cost_fraction)
+    # Cost penalty (uncapped, so overspend is penalized correctly)
+    cost_penalty = _CONFIG.COST_PENALTY_RATE * cost_fraction
 
     # Ramp penalty (dense signal in warning zone [200, 300))
     ramp_penalty = 0.0
@@ -204,7 +205,6 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
     if steal_dropped and p99 < _CONFIG.SLA_THRESHOLD_MS:
         proactive_bonus = _CONFIG.PROACTIVE_BONUS
 
-    # Sum and clamp
     raw_reward = (
         uptime_reward
         - cost_penalty
@@ -213,7 +213,6 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
         + proactive_bonus
     )
     return float(max(_R_MIN, min(_R_MAX, raw_reward)))
-
 
 # ---------------------------------------------------------------------------
 # Action validation (Fix #22)
@@ -305,6 +304,7 @@ class KubeCostEnv:
         # ------------------------------------------------------------------
         self._step: int = 0
         self._current_obs: Observation | None = None
+        self.steal_suppression_steps: int = 0
 
         # Mutable cluster state (updated by _apply_action)
         first_obs = self.steps_data[0].observation
@@ -312,7 +312,7 @@ class KubeCostEnv:
         # Ensure node_size is an enum (Pydantic may return string value due to config)
         first_node = first_obs.node_size_class
         self._node_size: NodeSizeClass = NodeSizeClass(first_node) if isinstance(first_node, str) else first_node
-        self._prev_steal_pct: float = first_obs.cpu_steal_pct
+        self._prev_steal_pct: float = first_obs.base_steal_pct
 
         # Trajectory log (list[TrajectoryStep]) — filled during step()
         self._trajectory: list[TrajectoryStep] = []
@@ -339,13 +339,12 @@ class KubeCostEnv:
         first_obs = first_trace_step.observation
 
         self._replicas = first_obs.active_replicas
-        # Ensure node_size is an enum (Pydantic may return string value due to config)
         first_node = first_obs.node_size_class
         self._node_size = NodeSizeClass(first_node) if isinstance(first_node, str) else first_node
-        self._prev_steal_pct = first_obs.cpu_steal_pct
+        self._prev_steal_pct = first_obs.base_steal_pct
+        self.steal_suppression_steps = 0
 
-        # Set current observation (already a Pydantic model)
-        self._current_obs = first_obs
+        self._current_obs = self._build_observation(first_obs)
         return self._current_obs
 
     def step(self, action: Action) -> Tuple[Observation, float, bool, Dict[str, Any]]:
@@ -373,39 +372,25 @@ class KubeCostEnv:
         # 0. Validate action
         validate_action(action)
         
-        # 1. Advance step counter FIRST
         self._step += 1
-        
-        # Prevent stepping beyond trace length
+
         if self._step >= self.total_steps:
             done = True
             return self._current_obs, 0.0, done, {}
-        
-        # 2. Load next observation from trace (as baseline)
-        trace_idx = self._step
-        trace_step = self.steps_data[trace_idx]
-        trace_obs = trace_step.observation
-        
-        # 3. Create physics-modified observation (deep copy to avoid trace mutation)
-        new_obs = trace_obs.model_copy(deep=True)
-        
-        # 4. Capture steal BEFORE reward calculation (for proactive bonus)
+
         if self._current_obs is not None:
             self._prev_steal_pct = self._current_obs.cpu_steal_pct
-        
-        # 5. Apply action to internal state (replicas, node_size)
+
+        # Apply the agent action first so the next observation reflects capacity changes.
         self._apply_action(action)
-        
-        # 6. Apply physics overlay (actions now HAVE causal effect)
-        self._apply_physics(new_obs, trace_obs)
-        
-        # 7. Set new observation as current
+
+        trace_step = self.steps_data[self._step]
+        trace_obs = trace_step.observation
+
+        new_obs = self._build_observation(trace_obs)
         self._current_obs = new_obs
-        
-        # 8. Compute reward (uses physics-updated observation)
+
         reward: float = self._calculate_reward()
-        
-        # 9. Determine done
         done: bool = self._step >= self.total_steps - 1
         
         # 10. Build info dict
@@ -496,11 +481,10 @@ class KubeCostEnv:
             next_tier = min(current_tier + 1, len(_NODE_TIER) - 1)
             self._node_size = _NODE_FROM_TIER[next_tier]
 
-        # ---- REBALANCE_NODE: proactive signal (no multi-step effect) ----
+        # ---- REBALANCE_NODE: proactive signal (temporary noisy-neighbor relief) ----
         elif action_type == ActionType.REBALANCE_NODE:
-            # Rebalance action is logged in trajectory for grading
-            # Graders use REBALANCE_NODE history to compute proactive scores
-            pass
+            # Grants a short window of reduced steal to make the action causal.
+            self.steal_suppression_steps = 3
 
         # ---- MAINTAIN: explicit no-op ----
         elif action_type == ActionType.MAINTAIN:
@@ -528,45 +512,64 @@ class KubeCostEnv:
     # Accessors (convenience)
     # ------------------------------------------------------------------
 
-    def _apply_physics(self, obs: Observation, trace_obs: Observation) -> None:
-        """
-        Update observation based on current environment state (Physics Overlay).
-        
-        Args:
-            obs: The observation to modify (already a deep copy).
-            trace_obs: The original trace observation for baseline comparison.
-        """
-        # 1. Update replicas and node size (Direct causality)
-        obs.active_replicas = self._replicas
-        obs.node_size_class = self._node_size
-        
-        # 2. Update cost based on replicas and tier
-        # Base: S=$10, M=$25, L=$50. Variable: $1/pod/hr.
+    def _get_node_capacity_multiplier(self) -> float:
+        """Return capacity multiplier for the current node size."""
+        if self._node_size == NodeSizeClass.SMALL:
+            return 1.0
+        if self._node_size == NodeSizeClass.MEDIUM:
+            return 2.0
+        return 4.0
+
+    def _compute_current_cost(self) -> float:
+        """Compute actual hourly cost based on current node size and replica count."""
         base_costs = {
             NodeSizeClass.SMALL: 10.0,
-            NodeSizeClass.MEDIUM: 25.0,
-            NodeSizeClass.LARGE: 50.0
+            NodeSizeClass.MEDIUM: 20.0,
+            NodeSizeClass.LARGE: 40.0,
         }
-        tier = self._node_size
-        base = base_costs.get(tier, 10.0)
-        obs.current_hourly_cost = base + (self._replicas * 1.0)
-        
-        # 3. Dynamic error rate scaling (Inverse scaling)
-        # If agent has more replicas than trace, error rate drops.
-        # If fewer, error rate spikes.
-        # Use +1 to avoid div-by-zero for 0-replica trace baselines.
-        replica_ratio = (trace_obs.active_replicas + 1) / (self._replicas + 1)
-        
-        # Simple interpolation: error_rate scales with the gap
-        obs.http_error_rate = min(1.0, trace_obs.http_error_rate * replica_ratio)
-        
-        # 4. Dynamic latency scaling
-        if replica_ratio > 1.0:
-            # Under-provisioned: latency increases non-linearly
-            obs.p99_latency_ms = trace_obs.p99_latency_ms * (replica_ratio ** 1.5)
+        return base_costs.get(self._node_size, 10.0) + float(self._replicas)
+
+    def _build_observation(self, trace_obs: TraceObservation) -> Observation:
+        """Build the agent-facing Observation from raw trace demand and current state."""
+        capacity = max(1.0, self._replicas * self._get_node_capacity_multiplier())
+
+        cpu_usage = min(100.0, (trace_obs.base_cpu_demand / capacity) * 100.0)
+        mem_usage = min(100.0, (trace_obs.base_mem_demand / capacity) * 100.0)
+
+        demand_pressure = max(0.0, (cpu_usage - 70.0) / 30.0)
+        p99 = max(40.0, trace_obs.base_latency_ms * (1.0 + demand_pressure * 0.75))
+
+        if cpu_usage > 90.0:
+            raw_steal_pct = min(1.0, max(trace_obs.base_steal_pct, (cpu_usage - 90.0) / 10.0))
         else:
-            # Over-provisioned: latency drops slightly, but has a floor
-            obs.p99_latency_ms = max(40.0, trace_obs.p99_latency_ms * replica_ratio)
+            raw_steal_pct = max(trace_obs.base_steal_pct * 0.5, trace_obs.base_steal_pct)
+
+        if self.steal_suppression_steps > 0:
+            steal_pct = round(raw_steal_pct * 0.2, 4)
+            self.steal_suppression_steps -= 1
+        else:
+            steal_pct = round(raw_steal_pct, 4)
+
+        error_rate = trace_obs.base_error_rate
+        if cpu_usage > 80.0:
+            error_rate = min(1.0, error_rate + (cpu_usage - 80.0) / 60.0)
+        else:
+            error_rate = min(1.0, error_rate * (0.5 + cpu_usage / 200.0))
+
+        buffer_depth = int(trace_obs.buffer_depth * (1.0 + cpu_usage / 150.0))
+
+        return Observation(
+            cpu_usage_pct=round(cpu_usage, 4),
+            mem_usage_pct=round(mem_usage, 4),
+            p99_latency_ms=round(p99, 4),
+            http_error_rate=round(min(1.0, error_rate), 4),
+            cpu_steal_pct=round(min(1.0, steal_pct), 4),
+            active_replicas=self._replicas,
+            buffer_depth=max(0, buffer_depth),
+            node_size_class=self._node_size,
+            current_hourly_cost=round(self._compute_current_cost(), 4),
+            node_bin_density=trace_obs.node_bin_density,
+        )
 
     @property
     def trajectory(self) -> list[TrajectoryStep]:
