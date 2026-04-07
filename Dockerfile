@@ -8,15 +8,15 @@ FROM python:3.10.18-slim-bullseye
 # Set working directory
 WORKDIR /app
 
-# Copy project metadata and lockfile for Astral UV dependency install
-COPY pyproject.toml uv.lock ./
+# Copy build definition first (layer caching)
+COPY pyproject.toml .
+# Optionally copy lockfile for reproducibility if present
+COPY uv.lock* .
 
-# Install Astral UV CLI and sync runtime dependencies from lockfile
-RUN pip install --no-cache-dir uv
-RUN uv sync --no-dev
-
-# Ensure build steps use the UV-managed virtual environment
-ENV PATH="/app/.venv/bin:$PATH"
+# Install dependencies directly from pyproject.toml
+# Using --upgrade pip for manifest reliability as requested by SDD Phase 5
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir --retries 3 --timeout 60 .
 
 # Copy application code
 COPY . .
