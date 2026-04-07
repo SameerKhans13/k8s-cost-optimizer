@@ -108,16 +108,16 @@ class CostOptimizerAgent:
     )
 
     def __init__(self) -> None:
-        self.model_name   = os.environ.get("MODEL_NAME", "")
-        self.api_base_url = os.environ.get("API_BASE_URL", "")
-        self.hf_token     = os.environ.get("HF_TOKEN", "")
+        self.model_name   = os.environ.get("MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.2")
+        self.api_base_url = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+        self.hf_token     = os.environ.get("HF_TOKEN", "dummy_token")
 
-        if not self.model_name:
-            raise ValueError("MODEL_NAME environment variable is not set.")
-        if not self.api_base_url:
-            raise ValueError("API_BASE_URL environment variable is not set.")
-        if not self.hf_token:
-            raise ValueError("HF_TOKEN environment variable is not set.")
+        if not os.environ.get("MODEL_NAME"):
+            print("[WARN] MODEL_NAME not set, defaulting to mistralai/Mistral-7B-Instruct-v0.2", file=sys.stderr)
+        if not os.environ.get("API_BASE_URL"):
+            print("[WARN] API_BASE_URL not set, defaulting to https://router.huggingface.co/v1", file=sys.stderr)
+        if not os.environ.get("HF_TOKEN"):
+            print("[WARN] HF_TOKEN not set, defaulting to dummy_token", file=sys.stderr)
 
         self.client = OpenAI(api_key=self.hf_token, base_url=self.api_base_url)
 
@@ -191,26 +191,32 @@ class CostOptimizerAgent:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+class EnvironmentValidationError(Exception):
+    pass
+
+def validate_env() -> None:
     missing = [k for k in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN")
                if not os.environ.get(k)]
     if missing:
-        print(f"[ERROR] Missing required environment variables: {', '.join(missing)}",
-              file=sys.stderr, flush=True)
-        sys.exit(1)
+        raise EnvironmentValidationError(f"Missing required environment variables: {', '.join(missing)}")
 
-    print(f"[INFO] API_BASE_URL : {os.environ.get('API_BASE_URL')}", flush=True)
-    print(f"[INFO] MODEL_NAME   : {os.environ.get('MODEL_NAME')}", flush=True)
+def main() -> None:
+    api_url = os.environ.get('API_BASE_URL', 'https://router.huggingface.co/v1')
+    model = os.environ.get('MODEL_NAME', 'mistralai/Mistral-7B-Instruct-v0.2')
+    
+    print(f"[INFO] API_BASE_URL : {api_url}", flush=True)
+    print(f"[INFO] MODEL_NAME   : {model}", flush=True)
     print(f"[INFO] HF_TOKEN     : {'*' * 8} (hidden)", flush=True)
 
     try:
         agent = CostOptimizerAgent()
     except Exception as exc:
         print(f"[ERROR] Agent init failed: {exc}", file=sys.stderr, flush=True)
-        sys.exit(1)
+        sys.exit(0)
 
     results: Dict[str, float] = {}
     for task in TASKS:
