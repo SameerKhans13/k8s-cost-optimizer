@@ -21,7 +21,8 @@
       "Bash(python -c \"import openenv_core; print\\('openenv_core available'\\)\")",
       "Bash(python -c \"import openenv; print\\('openenv available'\\)\")",
       "Bash(python:*)",
-      "Bash(uv export:*)"
+      "Bash(uv export:*)",
+      "Bash(echo \"Exit code: $? \\(FAILURE\\)\")"
     ]
   }
 }
