@@ -154,3 +154,5 @@ validation_report*.txt
 validation_output.txt
 validation_report_ascii.txt
 validation_report_pure_ascii.txt
+
+.claude/settings.local.json
