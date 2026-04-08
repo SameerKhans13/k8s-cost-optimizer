@@ -1,6 +1,5 @@
 import os
 import requests
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,6 +10,7 @@ REPO_ID = os.environ.get("REPO_ID", "rishi-harti768/k8s-cost-optimizer")
 # Your Hugging Face User Access Token (with READ permission)
 # This is DIFFERENT from the sk-... token used for LLMs
 HF_USER_TOKEN = os.environ.get("HF_USER_TOKEN")
+
 
 def fetch_logs(repo_id: str, token: str, log_type: str = "app"):
     """
@@ -25,7 +25,7 @@ def fetch_logs(repo_id: str, token: str, log_type: str = "app"):
     headers = {"Authorization": f"Bearer {token}"}
 
     print(f"🔍 Fetching {log_type} logs for {repo_id}...")
-    
+
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
@@ -39,17 +39,25 @@ def fetch_logs(repo_id: str, token: str, log_type: str = "app"):
             else:
                 print(logs)
             print("\n--- END LOGS ---")
-            
+
             # Check for common error keywords
-            error_keywords = ["Traceback", "ERROR", "RuntimeError", "Exception", "Build failed"]
+            error_keywords = [
+                "Traceback",
+                "ERROR",
+                "RuntimeError",
+                "Exception",
+                "Build failed",
+            ]
             found_errors = [k for k in error_keywords if k.lower() in logs.lower()]
             if found_errors:
                 print(f"\n⚠️  Potential issues found: {', '.join(found_errors)}")
             else:
                 print("\n✅ No obvious runtime errors found in the current logs.")
-                
+
         elif response.status_code == 401:
-            print("❌ Unauthorized: Your HF_USER_TOKEN might be invalid or missing permissions.")
+            print(
+                "❌ Unauthorized: Your HF_USER_TOKEN might be invalid or missing permissions."
+            )
         elif response.status_code == 404:
             print(f"❌ Not Found: Space {repo_id} does not exist or is private.")
         else:
@@ -57,6 +65,7 @@ def fetch_logs(repo_id: str, token: str, log_type: str = "app"):
             print(response.text)
     except Exception as e:
         print(f"❌ Error: {str(e)}")
+
 
 if __name__ == "__main__":
     fetch_logs(REPO_ID, HF_USER_TOKEN)

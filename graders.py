@@ -48,13 +48,12 @@ class _GraderConfig:
 
     # Entropy storm parameters
     LOOKBACK_WINDOW: int = 5
-    
+
     # Cost budget for normalization
     BUDGET: float = 100.0
 
 
 _CONFIG = _GraderConfig()
-
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +131,10 @@ class ColdStartGrader:
         # Edge case: empty trajectory
         if not trajectory:
             logger.warning("ColdStartGrader: received empty trajectory")
-            return 0.0
+            return 0.01
 
         # Collect http_error_rate from every step's observation
-        total_error = sum(
-            step.observation.http_error_rate
-            for step in trajectory
-        )
+        total_error = sum(step.observation.http_error_rate for step in trajectory)
 
         # Average across the full episode (length-invariant)
         avg_error_rate = total_error / len(trajectory)
@@ -146,8 +142,8 @@ class ColdStartGrader:
         # Score: perfect uptime = 1.0, total failure = 0.0
         score = 1.0 - avg_error_rate
 
-        # Hard clamp — mathematically cannot exceed [0.0, 1.0]
-        return max(0.0, min(1.0, score))
+        # Hard clamp — mathematically cannot exceed [0.0, 1.0] but to stay strictly within (0, 1) we use 0.01, 0.99
+        return max(0.01, min(0.99, score))
 
 
 class EfficientSqueezeGrader:
@@ -193,7 +189,7 @@ class EfficientSqueezeGrader:
         # Edge case: empty trajectory
         if not trajectory:
             logger.warning("EfficientSqueezeGrader: received empty trajectory")
-            return 0.0
+            return 0.01
 
         # Count steps where steal crossed the threshold
         violations = sum(
@@ -206,7 +202,7 @@ class EfficientSqueezeGrader:
         score = 1.0 - (violations / len(trajectory))
 
         # Hard clamp
-        return max(0.0, min(1.0, score))
+        return max(0.01, min(0.99, score))
 
 
 class EntropyStormGrader:
@@ -260,7 +256,7 @@ class EntropyStormGrader:
         # Edge case: empty trajectory
         if not trajectory:
             logger.warning("EntropyStormGrader: received empty trajectory")
-            return 0.0
+            return 0.01
 
         # Step 1: Find all violation indices
         violation_indices = [
@@ -272,7 +268,7 @@ class EntropyStormGrader:
         # Special case: zero violations
         if not violation_indices:
             # No violations means there was no observed breach to credit.
-            return 0.0
+            return 0.01
 
         total_violations = len(violation_indices)
         proactive_actions = 0
@@ -280,7 +276,9 @@ class EntropyStormGrader:
         # Step 2: For each violation, check the tight lookback window
         for violation_idx in violation_indices:
             window_start = max(0, violation_idx - _CONFIG.LOOKBACK_WINDOW)
-            window_end = violation_idx  # exclusive — we look at steps *before* the breach
+            window_end = (
+                violation_idx  # exclusive — we look at steps *before* the breach
+            )
 
             # Only count REBALANCE_NODE if it was taken on a rising steal signal.
             def _is_rising_steal(step_index: int) -> bool:
@@ -304,4 +302,4 @@ class EntropyStormGrader:
         success_rate = proactive_actions / total_violations
 
         # Hard clamp
-        return max(0.0, min(1.0, success_rate))
+        return max(0.01, min(0.99, success_rate))

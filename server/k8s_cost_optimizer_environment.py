@@ -11,7 +11,7 @@ Reference: PROJECT_SPEC.md §2 OpenEnv Interface, §3 Reward Spec, §4 Environme
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple
 from openenv.core import Environment
 
 try:
@@ -24,7 +24,6 @@ try:
         TrajectoryStep,
         TraceData,
         TraceObservation,
-        TraceStep,
     )
 except ImportError:
     from models import (
@@ -36,7 +35,6 @@ except ImportError:
         TrajectoryStep,
         TraceData,
         TraceObservation,
-        TraceStep,
     )
 
 __all__ = [
@@ -208,10 +206,14 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
     # Ramp penalty (dense signal in warning zone [200, 300))
     ramp_penalty = 0.0
     if _CONFIG.SLA_WARNING_MIN_MS <= p99 < _CONFIG.SLA_THRESHOLD_MS:
-        ramp_penalty = ((p99 - _CONFIG.SLA_WARNING_MIN_MS) / 100.0) * _CONFIG.RAMP_PENALTY_RATE
+        ramp_penalty = (
+            (p99 - _CONFIG.SLA_WARNING_MIN_MS) / 100.0
+        ) * _CONFIG.RAMP_PENALTY_RATE
 
     # SLA breach hard penalty
-    sla_breach_penalty = _CONFIG.SLA_BREACH_PENALTY if p99 >= _CONFIG.SLA_THRESHOLD_MS else 0.0
+    sla_breach_penalty = (
+        _CONFIG.SLA_BREACH_PENALTY if p99 >= _CONFIG.SLA_THRESHOLD_MS else 0.0
+    )
 
     # Proactive bonus (steal dropping + healthy p99)
     proactive_bonus = 0.0
@@ -227,6 +229,7 @@ def compute_reward(observation: Observation, previous_steal_pct: float) -> float
         + proactive_bonus
     )
     return float(max(_R_MIN, min(_R_MAX, raw_reward)))
+
 
 # ---------------------------------------------------------------------------
 # Action validation (Fix #22)
@@ -253,7 +256,9 @@ def validate_action(action: Action) -> None:
         raise ActionValidationError("Action.action_type cannot be None")
 
     if not isinstance(action.action_type, ActionType):
-        raise ActionValidationError(f"action_type must be ActionType, got {type(action.action_type)}")
+        raise ActionValidationError(
+            f"action_type must be ActionType, got {type(action.action_type)}"
+        )
 
 
 def get_replica_delta(action_type: ActionType) -> int:
@@ -328,7 +333,9 @@ class K8sCostOptimizerEnvironment(Environment):
         self._replicas: int = first_obs.active_replicas
         # Ensure node_size is an enum (Pydantic may return string value due to config)
         first_node = first_obs.node_size_class
-        self._node_size: NodeSizeClass = NodeSizeClass(first_node) if isinstance(first_node, str) else first_node
+        self._node_size: NodeSizeClass = (
+            NodeSizeClass(first_node) if isinstance(first_node, str) else first_node
+        )
         self._prev_steal_pct: float = first_obs.base_steal_pct
 
         # Trajectory log (list[TrajectoryStep]) — filled during step()
@@ -358,7 +365,9 @@ class K8sCostOptimizerEnvironment(Environment):
 
         self._replicas = first_obs.active_replicas
         first_node = first_obs.node_size_class
-        self._node_size = NodeSizeClass(first_node) if isinstance(first_node, str) else first_node
+        self._node_size = (
+            NodeSizeClass(first_node) if isinstance(first_node, str) else first_node
+        )
         self._prev_steal_pct = first_obs.base_steal_pct
         self.steal_suppression_steps = 0
 
@@ -389,7 +398,7 @@ class K8sCostOptimizerEnvironment(Environment):
         """
         # 0. Validate action
         validate_action(action)
-        
+
         self._step += 1
 
         if self._step >= self.total_steps:
@@ -410,17 +419,19 @@ class K8sCostOptimizerEnvironment(Environment):
 
         reward: float = self._calculate_reward()
         done: bool = self._step >= self.total_steps - 1
-        
+
         # 10. Build info dict
         info: Dict[str, Any] = {
             "step": self._step,
             "task_name": self.trace.task_name,
             "task_difficulty": self.trace.task_difficulty,
             "replicas": self._replicas,
-            "node_size": self._node_size.value if isinstance(self._node_size, NodeSizeClass) else self._node_size,
+            "node_size": self._node_size.value
+            if isinstance(self._node_size, NodeSizeClass)
+            else self._node_size,
             "trace_reason": trace_step.dynamics.get("reason", ""),
         }
-        
+
         # 11. Log to trajectory (without redundant metrics)
         self._trajectory.append(
             TrajectoryStep(
@@ -532,8 +543,6 @@ class K8sCostOptimizerEnvironment(Environment):
     # Private utility
     # ------------------------------------------------------------------
 
-
-
     # ------------------------------------------------------------------
     # Accessors (convenience)
     # ------------------------------------------------------------------
@@ -566,9 +575,13 @@ class K8sCostOptimizerEnvironment(Environment):
         p99 = max(40.0, trace_obs.base_latency_ms * (1.0 + demand_pressure * 0.75))
 
         if cpu_usage > 90.0:
-            raw_steal_pct = min(1.0, max(trace_obs.base_steal_pct, (cpu_usage - 90.0) / 10.0))
+            raw_steal_pct = min(
+                1.0, max(trace_obs.base_steal_pct, (cpu_usage - 90.0) / 10.0)
+            )
         else:
-            raw_steal_pct = max(trace_obs.base_steal_pct * 0.5, trace_obs.base_steal_pct)
+            raw_steal_pct = max(
+                trace_obs.base_steal_pct * 0.5, trace_obs.base_steal_pct
+            )
 
         if self.steal_suppression_steps > 0:
             steal_pct = round(raw_steal_pct * 0.2, 4)

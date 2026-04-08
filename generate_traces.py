@@ -7,6 +7,7 @@ from pathlib import Path
 TRACE_STEPS = int(os.getenv("TRACE_STEPS", "25"))
 TRACE_MAX_COUNT = int(os.getenv("TRACE_MAX_COUNT", "9999"))
 
+
 def generate_sinusoidal_trace(task_name, difficulty, steps=None):
     if steps is None:
         steps = TRACE_STEPS
@@ -43,7 +44,9 @@ def generate_sinusoidal_trace(task_name, difficulty, steps=None):
             active_replicas = 5
             node_size = "S"
             base_error = 0.02
-            steal_pct = max(0.0, min(0.35, 0.18 + 0.08 * math.sin(i / 8.0 * 2.0 * math.pi)))
+            steal_pct = max(
+                0.0, min(0.35, 0.18 + 0.08 * math.sin(i / 8.0 * 2.0 * math.pi))
+            )
             p99_latency = base_latency + 18.0 * math.sin(i / 10.0 * 2.0 * math.pi)
             current_cost = 10.0 + active_replicas * 1.0
             reason = "squeeze_24h_cycle"
@@ -74,21 +77,23 @@ def generate_sinusoidal_trace(task_name, difficulty, steps=None):
             "buffer_depth": 80 + i * 3,
             "node_size_class": node_size,
             "current_hourly_cost": round(current_cost, 2),
-            "node_bin_density": [round(max(0.0, min(1.0, 0.45 + 0.05 * math.sin((i + j) / 4.0))), 4) for j in range(10)]
+            "node_bin_density": [
+                round(max(0.0, min(1.0, 0.45 + 0.05 * math.sin((i + j) / 4.0))), 4)
+                for j in range(10)
+            ],
         }
 
-        steps_data.append({
-            "step": i,
-            "observation": observation,
-            "dynamics": {"reason": reason}
-        })
+        steps_data.append(
+            {"step": i, "observation": observation, "dynamics": {"reason": reason}}
+        )
 
     return {
         "task_name": task_name,
         "task_difficulty": difficulty,
         "description": f"Programmatic {task_name} trace with {steps} steps (Sinusoidal CPU model).",
-        "steps": steps_data
+        "steps": steps_data,
     }
+
 
 def main():
     # Read traces directory from environment variable, default to "traces"
@@ -120,9 +125,12 @@ def main():
         data = generate_sinusoidal_trace(task_name, diff, steps=TRACE_STEPS)
         with (traces_dir / filename).open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
-    
-    print(f"Done generating {min(TRACE_MAX_COUNT, len(trace_files))} traces (out of {len(trace_files)} available).")
+
+    print(
+        f"Done generating {min(TRACE_MAX_COUNT, len(trace_files))} traces (out of {len(trace_files)} available)."
+    )
     print(f"Config: TRACE_STEPS={TRACE_STEPS}, TRACE_MAX_COUNT={TRACE_MAX_COUNT}")
+
 
 if __name__ == "__main__":
     main()

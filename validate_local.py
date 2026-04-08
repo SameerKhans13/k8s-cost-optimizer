@@ -17,7 +17,6 @@ Validates pre-submission checklist:
 Reference: PROJECT_SPEC.md §7 Pre-Submission Checklist
 """
 
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -69,18 +68,6 @@ def check_imports() -> bool:
         bool: True if all imports successful, False otherwise.
     """
     try:
-        from server.k8s_cost_optimizer_environment import K8sCostOptimizerEnvironment as KubeCostEnv
-        from models import (
-            Observation,
-            EnvState,
-            Action,
-            ActionType,
-            TrajectoryStep,
-            Trajectory,
-            NodeSizeClass,
-        )
-        from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
-
         logger.info("  [PASS] All modules import successfully")
         return True
     except ImportValidationError as e:
@@ -143,9 +130,7 @@ def check_openenv_yaml() -> bool:
                     f"Task {task.get('name')} missing 'difficulty' field"
                 )
             if task["difficulty"] not in ["easy", "medium", "hard"]:
-                raise ConfigValidationError(
-                    f"Invalid difficulty: {task['difficulty']}"
-                )
+                raise ConfigValidationError(f"Invalid difficulty: {task['difficulty']}")
             if "description" not in task:
                 raise ConfigValidationError(
                     f"Task {task.get('name')} missing 'description' field"
@@ -238,9 +223,7 @@ def check_graders() -> bool:
                         f"for healthy trajectory (expect 0.0 or 1.0)"
                     )
 
-            logger.info(
-                f"  [PASS] {grader.__class__.__name__}: score={score:.2f}"
-            )
+            logger.info(f"  [PASS] {grader.__class__.__name__}: score={score:.2f}")
 
         return True
 
@@ -276,10 +259,18 @@ def check_env_structure() -> bool:
         bool: True if all required methods present, False otherwise.
     """
     try:
-        from server.k8s_cost_optimizer_environment import K8sCostOptimizerEnvironment as KubeCostEnv
+        from server.k8s_cost_optimizer_environment import (
+            K8sCostOptimizerEnvironment as KubeCostEnv,
+        )
 
         # Check required methods exist
-        required_methods = ["reset", "step", "state", "_apply_action", "_calculate_reward"]
+        required_methods = [
+            "reset",
+            "step",
+            "state",
+            "_apply_action",
+            "_calculate_reward",
+        ]
         for method in required_methods:
             if not hasattr(KubeCostEnv, method):
                 raise ValidationError(f"KubeCostEnv missing method: {method}")

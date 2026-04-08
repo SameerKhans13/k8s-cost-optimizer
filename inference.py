@@ -26,47 +26,76 @@ from pathlib import Path
 
 import subprocess
 
+
 def _self_heal():
     """Attempt to install missing dependencies and print diagnostics."""
-    print(f"--- DIAGNOSTICS ---", file=sys.stderr)
+    print("--- DIAGNOSTICS ---", file=sys.stderr)
     print(f"Python: {sys.version}", file=sys.stderr)
     print(f"CWD: {os.getcwd()}", file=sys.stderr)
     print(f"PATH: {sys.path}", file=sys.stderr)
     try:
         print("Attempting self-healing (pip install openenv-core)...", file=sys.stderr)
-        subprocess.run([sys.executable, "-m", "pip", "install", "openenv-core"], check=True, capture_output=True)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "openenv-core"],
+            check=True,
+            capture_output=True,
+        )
         print("Self-healing successful.", file=sys.stderr)
     except Exception as e:
         print(f"Self-healing failed: {e}", file=sys.stderr)
-    
+
     try:
         print("--- PIP LIST ---", file=sys.stderr)
-        res = subprocess.run([sys.executable, "-m", "pip", "list"], capture_output=True, text=True)
+        res = subprocess.run(
+            [sys.executable, "-m", "pip", "list"], capture_output=True, text=True
+        )
         print(res.stdout, file=sys.stderr)
     except Exception:
         pass
 
+
 try:
-    from server.k8s_cost_optimizer_environment import K8sCostOptimizerEnvironment as KubeCostEnv
+    from server.k8s_cost_optimizer_environment import (
+        K8sCostOptimizerEnvironment as KubeCostEnv,
+    )
     from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
     from models import Observation, Action, ActionType
 except ModuleNotFoundError as e:
     if "openenv" in str(e):
         _self_heal()
         try:
-            from server.k8s_cost_optimizer_environment import K8sCostOptimizerEnvironment as KubeCostEnv
-            from graders import ColdStartGrader, EfficientSqueezeGrader, EntropyStormGrader
+            from server.k8s_cost_optimizer_environment import (
+                K8sCostOptimizerEnvironment as KubeCostEnv,
+            )
+            from graders import (
+                ColdStartGrader,
+                EfficientSqueezeGrader,
+                EntropyStormGrader,
+            )
             from models import Observation, Action, ActionType
         except ModuleNotFoundError as e2:
-            print(f"[ERROR] Still failed to import after self-healing: {e2}", file=sys.stderr, flush=True)
+            print(
+                f"[ERROR] Still failed to import after self-healing: {e2}",
+                file=sys.stderr,
+                flush=True,
+            )
             sys.exit(1)
     else:
-        print(f"[ERROR] Failed to import required module: {e}", file=sys.stderr, flush=True)
-        print(f"[ERROR] Make sure all dependencies are installed: pip install -r requirements.txt", file=sys.stderr, flush=True)
+        print(
+            f"[ERROR] Failed to import required module: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "[ERROR] Make sure all dependencies are installed: pip install -r requirements.txt",
+            file=sys.stderr,
+            flush=True,
+        )
         sys.exit(1)
 except Exception as e:
     print(f"[ERROR] Failed to import modules: {e}", file=sys.stderr, flush=True)
     sys.exit(1)
+
 
 # Load environment variables from .env file if it exists
 def load_env():
@@ -91,6 +120,7 @@ def load_env():
     except Exception as exc:
         print(f"[WARN] Error loading .env file: {exc}", file=sys.stderr)
 
+
 load_env()
 
 # ---------------------------------------------------------------------------
@@ -101,25 +131,25 @@ MAX_STEPS_PER_TASK = 200
 
 TASKS: List[Dict[str, Any]] = [
     {
-        "name":        "cold_start",
-        "trace":       "traces/trace_v1_coldstart.json",
-        "grader":      ColdStartGrader(),
+        "name": "cold_start",
+        "trace": "traces/trace_v1_coldstart.json",
+        "grader": ColdStartGrader(),
         "description": "Scale cluster from 0 to 5 replicas without SLA breach (p99 < 300ms).",
-        "difficulty":  "easy",
+        "difficulty": "easy",
     },
     {
-        "name":        "efficient_squeeze",
-        "trace":       "traces/trace_v1_squeeze.json",
-        "grader":      EfficientSqueezeGrader(),
+        "name": "efficient_squeeze",
+        "trace": "traces/trace_v1_squeeze.json",
+        "grader": EfficientSqueezeGrader(),
         "description": "Maintain cpu_steal_pct < 20% across 24-hour sinusoidal load cycle.",
-        "difficulty":  "medium",
+        "difficulty": "medium",
     },
     {
-        "name":        "entropy_storm",
-        "trace":       "traces/trace_v1_entropy.json",
-        "grader":      EntropyStormGrader(),
+        "name": "entropy_storm",
+        "trace": "traces/trace_v1_entropy.json",
+        "grader": EntropyStormGrader(),
         "description": "Issue REBALANCE_NODE before cpu_steal_pct exceeds 20% (proactive).",
-        "difficulty":  "hard",
+        "difficulty": "hard",
     },
 ]
 
@@ -128,6 +158,7 @@ TASKS: List[Dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 BENCHMARK = "kubecost-gym"
+
 
 def log_start(task_name: str, model: str) -> None:
     # Format: [START] task=<task_name> env=<benchmark> model=<model_name>
@@ -153,18 +184,17 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     )
 
 
-
 # ---------------------------------------------------------------------------
 # LLM Agent (OpenAI Client — mandatory)
 # ---------------------------------------------------------------------------
 
-class CostOptimizerAgent:
 
+class CostOptimizerAgent:
     SYSTEM_PROMPT = (
         "You are a Kubernetes cost optimization expert. "
         "You must respond with ONLY a valid JSON object containing a single field 'action_type'. "
         "Do not include any explanation, reasoning, or additional text. "
-        "Example: {\"action_type\": \"MAINTAIN\"}"
+        'Example: {"action_type": "MAINTAIN"}'
     )
 
     def __init__(self) -> None:
@@ -172,10 +202,12 @@ class CostOptimizerAgent:
         # This allows inference.py to be imported even if openai isn't available yet.
         # The import only happens when CostOptimizerAgent is actually instantiated.
         from openai import OpenAI
-        
-        self.model_name   = os.environ.get("MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.2")
+
+        self.model_name = os.environ.get(
+            "MODEL_NAME", "mistralai/Mistral-7B-Instruct-v0.2"
+        )
         self.api_base_url = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-        self.hf_token     = os.environ.get("HF_TOKEN", "")
+        self.hf_token = os.environ.get("HF_TOKEN", "")
 
         if not self.hf_token:
             print("[ERROR] HF_TOKEN environment variable is required", file=sys.stderr)
@@ -187,7 +219,7 @@ class CostOptimizerAgent:
     def decide(self, obs: Observation, task_description: str = "") -> Action:
         available = ", ".join(a.value for a in ActionType)
         obs_dict = obs.model_dump()
-        
+
         # Simplify observation for LLM to reduce token usage
         simplified_obs = {
             "cpu_usage_pct": obs_dict["cpu_usage_pct"],
@@ -198,43 +230,47 @@ class CostOptimizerAgent:
             "active_replicas": obs_dict["active_replicas"],
             "current_hourly_cost": obs_dict["current_hourly_cost"],
         }
-        
+
         obs_json = json.dumps(simplified_obs, indent=2)
         prompt = (
             f"Task: {task_description}\n\n"
             f"Available actions:\n{available}\n\n"
             f"Current state:\n{obs_json}\n\n"
-            f"Respond with ONLY this JSON format: {{\"action_type\": \"ACTION_NAME\"}}"
+            f'Respond with ONLY this JSON format: {{"action_type": "ACTION_NAME"}}'
         )
-        
+
         import time
         import re
-        
+
         for attempt in range(3):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[
                         {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user",   "content": prompt},
+                        {"role": "user", "content": prompt},
                     ],
                     temperature=0.0,  # Deterministic
-                    max_tokens=50,    # Very short - just need JSON
-                    stream=False,     # Disable streaming for simpler parsing
+                    max_tokens=50,  # Very short - just need JSON
+                    stream=False,  # Disable streaming for simpler parsing
                 )
-                
+
                 if not response.choices:
-                    raise ValueError(f"Empty choices from API")
-                    
+                    raise ValueError("Empty choices from API")
+
                 message = response.choices[0].message
                 text = message.content or ""
 
                 # Extract from tool_calls if content is empty
-                if not text and hasattr(message, 'tool_calls') and message.tool_calls:
+                if not text and hasattr(message, "tool_calls") and message.tool_calls:
                     text = message.tool_calls[0].function.arguments or ""
 
                 # Handle reasoning-only responses
-                if not text and hasattr(message, 'reasoning_content') and message.reasoning_content:
+                if (
+                    not text
+                    and hasattr(message, "reasoning_content")
+                    and message.reasoning_content
+                ):
                     # Try to extract action from reasoning text
                     reasoning = message.reasoning_content
                     for action_type in ActionType:
@@ -244,51 +280,54 @@ class CostOptimizerAgent:
                     return Action(action_type=ActionType.MAINTAIN)
 
                 if not text:
-                    raise ValueError(f"Empty response from API")
+                    raise ValueError("Empty response from API")
 
                 # Clean up text
                 text = text.strip()
-                
+
                 # Remove markdown code blocks
                 if text.startswith("```"):
-                    text = re.sub(r'^```(?:json)?\s*', '', text)
-                    text = re.sub(r'```\s*$', '', text)
+                    text = re.sub(r"^```(?:json)?\s*", "", text)
+                    text = re.sub(r"```\s*$", "", text)
                     text = text.strip()
-                
+
                 # Try to extract JSON if embedded in text
                 json_match = re.search(r'\{[^}]*"action_type"[^}]*\}', text)
                 if json_match:
                     text = json_match.group(0)
-                
+
                 # Parse JSON
                 data = json.loads(text)
                 action_str = data.get("action_type")
-                
+
                 if not action_str:
                     raise ValueError("No action_type in response")
-                
+
                 return Action(action_type=ActionType(action_str))
-                
+
             except Exception as exc:
                 if attempt < 2:
                     time.sleep(1 + attempt)  # 1s, 2s delays
                 else:
-                    print(f"[WARN] LLM failed after 3 attempts: {exc}. Defaulting to MAINTAIN",
-                          file=sys.stderr, flush=True)
+                    print(
+                        f"[WARN] LLM failed after 3 attempts: {exc}. Defaulting to MAINTAIN",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     return Action(action_type=ActionType.MAINTAIN)
 
     def run_task(self, task: Dict[str, Any]) -> float:
-        task_name   = task["name"]
+        task_name = task["name"]
         description = task["description"]
-        grader      = task["grader"]
-        trace_path  = task["trace"]
+        grader = task["grader"]
+        trace_path = task["trace"]
 
         log_start(task_name, self.model_name)
 
         total_steps = 0
-        score       = 0.0
-        rewards     = []
-        success     = False
+        score = 0.0
+        rewards = []
+        success = False
 
         try:
             env = KubeCostEnv(trace_path)
@@ -299,20 +338,21 @@ class CostOptimizerAgent:
                 obs, reward, done, _info = env.step(action)
                 total_steps = step_num
                 rewards.append(float(reward))
-                
+
                 log_step(step_num, action.action_type.value, reward, done)
-                
+
                 if done:
                     break
 
             score = grader.grade(env.trajectory)
             score = max(0.0, min(1.0, score))
-            success = score >= 0.1 # Standard success threshold
+            success = score >= 0.1  # Standard success threshold
 
         except Exception as exc:
-            print(f"[ERROR] Task '{task_name}' failed: {exc}",
-                  file=sys.stderr, flush=True)
-            score   = 0.0
+            print(
+                f"[ERROR] Task '{task_name}' failed: {exc}", file=sys.stderr, flush=True
+            )
+            score = 0.0
             success = False
 
         log_end(success, total_steps, score, rewards)
@@ -324,23 +364,29 @@ class CostOptimizerAgent:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 class EnvironmentValidationError(Exception):
     pass
 
+
 def validate_env() -> None:
-    missing = [k for k in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN")
-               if not os.environ.get(k)]
+    missing = [
+        k for k in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN") if not os.environ.get(k)
+    ]
     if missing:
-        raise EnvironmentValidationError(f"Missing required environment variables: {', '.join(missing)}")
+        raise EnvironmentValidationError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
+
 
 def main() -> None:
     # Check for required environment variable first
-    if not os.environ.get('HF_TOKEN'):
+    if not os.environ.get("HF_TOKEN"):
         print("[ERROR] HF_TOKEN environment variable is required", file=sys.stderr)
         print("[ERROR] Set it with: set HF_TOKEN=your-api-key", file=sys.stderr)
         print("[ERROR] Or for testing: set HF_TOKEN=dummy-token", file=sys.stderr)
         sys.exit(1)
-    
+
     try:
         agent = CostOptimizerAgent()
     except Exception as exc:
@@ -370,7 +416,12 @@ if __name__ == "__main__":
         print("\n[ERROR] Inference interrupted by user", file=sys.stderr, flush=True)
         sys.exit(130)
     except Exception as e:
-        print(f"\n[ERROR] Unhandled exception in inference: {e}", file=sys.stderr, flush=True)
+        print(
+            f"\n[ERROR] Unhandled exception in inference: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         import traceback
+
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
